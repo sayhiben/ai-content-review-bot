@@ -18,7 +18,7 @@ Scan costs are estimates. Pangram's remaining credits remain **unavailable** und
 
 ## Build and test offline
 
-Use Node **24.22.1** (see `.node-version`) and npm. Only discord.js and canvas are runtime dependencies. Dependencies and GitHub Actions are locked; the Docker image includes the native libraries and fonts canvas needs.
+Use Node **26.12.1** (see `.node-version`) and npm. Only discord.js and canvas are runtime dependencies. Dependencies and GitHub Actions are locked; the Docker image includes the native libraries and fonts canvas needs.
 
 ```sh
 npm ci
