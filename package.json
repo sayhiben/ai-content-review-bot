@@ -1,0 +1,27 @@
+{
+  "name": "ai-content-review-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private AI-content reports for Discord moderators, with a replaceable detection provider.",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": { "node": ">=24.22.1 <25" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --require ./tests/offline.cjs --test tests/*.test.cjs",
+    "check": "npm run typecheck && npm test",
+    "start": "node --env-file-if-exists=.env dist/main.js",
+    "commands": "node --env-file-if-exists=.env dist/registerCommands.js",
+    "healthcheck": "node dist/health.js",
+    "audit:production": "npm audit --omit=dev --audit-level=high"
+  },
+  "dependencies": {
+    "canvas": "3.2.3",
+    "discord.js": "14.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "7.0.2"
+  }
+}

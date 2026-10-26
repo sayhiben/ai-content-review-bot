@@ -1,0 +1,22 @@
+services:
+  bot:
+    build: .
+    image: ${BOT_IMAGE:-ai-content-review-bot:local}
+    env_file: .env
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 330s
+    mem_limit: 512m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
