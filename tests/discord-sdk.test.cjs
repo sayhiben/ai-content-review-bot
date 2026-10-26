@@ -1,13 +1,19 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { Client, ThreadMemberManager, InteractionWebhook, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
+const { ThreadMemberManager, InteractionWebhook, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
+const { createBot } = require('../dist/bot');
 const { AiCheckService } = require('../dist/aiDetection/AiCheckService');
 const { AiCheckInteractions } = require('../dist/aiDetection/interactions');
-const { result, text, context, access } = require('./fixtures.cjs');
+const { result, text, context, access, config } = require('./fixtures.cjs');
+
+function productionClient(t) {
+  const bot = createBot(config(), { health: () => {}, clearHealth: () => {}, log: () => {} });
+  t.after(() => bot.stop());
+  return bot.client;
+}
 
 test('real SDK thread cache cannot authorize a removed private-thread member', async t => {
-  const client = new Client({ intents: [] });
-  t.after(() => client.destroy());
+  const client = productionClient(t);
   let requests = 0;
   client.rest.get = async () => { requests++; throw Object.assign(new Error('Synthetic missing member'), { status: 404 }); };
   const member = { id: 'requester', roles: { cache: new Map() } };
@@ -29,8 +35,7 @@ test('real SDK thread cache cannot authorize a removed private-thread member', a
 });
 
 test('SDK webhook serialization preserves report attachments through private navigation', async t => {
-  const client = new Client({ intents: [] });
-  t.after(() => client.destroy());
+  const client = productionClient(t);
   const webhook = new InteractionWebhook(client, '12345678901234567', 'SYNTHETIC_TOKEN');
   const patches = [];
   let message = {
