@@ -10,3 +10,4 @@ for (const module of ['node:http', 'node:https']) {
 }
 delete process.env.DISCORD_TOKEN;
 delete process.env.PANGRAM_API_KEY;
+delete process.env.GPTZERO_API_KEY;

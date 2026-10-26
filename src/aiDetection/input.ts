@@ -18,7 +18,7 @@ export function validateText(text: string, minimumWords: number): void {
   }
   const count = wordCount(text);
   if (count < minimumWords) {
-    throw new AiCheckError("short", `This provider requires at least ${minimumWords} words. No scan was submitted.`);
+    throw new AiCheckError("short", `Please provide at least ${minimumWords} words for this provider. No scan was submitted.`);
   }
   if (count > LIMITS.words) {
     throw new AiCheckError("long", "Please submit at most 5,000 words. No text has been truncated or submitted.");
@@ -46,8 +46,10 @@ export async function readLimited(response: Response, limit: number): Promise<Ui
   return Buffer.concat(chunks);
 }
 
+export interface TextAttachment { name: string | null; size: number; url: string }
+
 export async function readTextAttachment(
-  attachment: { name: string | null; size: number; url: string },
+  attachment: TextAttachment,
   signal: AbortSignal,
   fetcher: Fetch = globalThis.fetch,
 ): Promise<string> {

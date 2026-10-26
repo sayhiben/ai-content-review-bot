@@ -18,6 +18,8 @@ export interface DetectionResult {
   explanation: string;
   /** Fractions of text, NEVER probabilities of document authorship. */
   textFractions?: { ai?: number; assisted?: number; human?: number };
+  /** Document-class probabilities, distinct from fractions of text. */
+  documentProbabilities?: { ai: number; mixed: number; human: number };
   segments: DetectionSegment[];
   usage?: {
     estimated: boolean;
@@ -32,16 +34,14 @@ export interface DetectionResult {
 export interface AiDetectionProvider {
   readonly name: string;
   readonly minimumWords: number;
+  readonly maximumCharacters?: number;
   analyze(text: string, options: { signal: AbortSignal }): Promise<DetectionResult>;
 }
 
 export interface AiDetectionConfig {
   enabled: boolean;
-  guildId: string;
-  provider: "pangram";
-  model: string;
-  /** An estimate for this model only; recheck when changing models. */
-  usdPer100Words: number;
+  pangram: { enabled: boolean; apiKey?: string; model: string; usdPer100Words: number };
+  gptzero: { enabled: boolean; apiKey?: string; modelVersion?: string; usdPer1000Words?: number };
 }
 
 export { UserFacingError as AiCheckError } from "../utils/UserFacingError";
