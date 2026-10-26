@@ -6,7 +6,7 @@ main.ts -> validated environment -> bot.ts (Discord lifecycle)
                                      -> AiCheckInteractions (Discord UI and access)
                                      -> AiCheckService (submission gates and report state)
                                           -> AiDetectionProvider
-                                               -> PangramProvider (HTTP and normalization)
+                                               -> PangramProvider / GPTZeroProvider
 
 DetectionResult -> report.ts (embed, segment pages, PNG, complete text)
 registerCommands.ts -> command.ts (explicit registration; offline preview by default)
@@ -15,7 +15,11 @@ health.ts -> local heartbeat only
 
 Runtime modules have no import-time login or command-registration side effects. The standalone bot uses stable discord.js, strict TypeScript, and Node's built-in test runner. There is no SeaBot router, server import, shared configuration, webpack bundle, plugin registry, queue, database, failover, or multi-provider scoring framework.
 
-`AiDetectionProvider` exposes its name, minimum word count, and one cancellable analysis operation. The normalized `DetectionResult` contains optional text fractions, labeled segments with optional verified positions, usage, and optional observed balance. Missing data stays unavailable. To add a backend, implement that interface and add a configuration/composition branch with fixtures. Do not translate a confidence score into a fraction of AI-written text.
+Configuration has separate Discord `access` and `detection` sections. The feature receives only those sections; the lifecycle owns the Discord login token. A small pure policy in `discord/access.ts` implements the single-guild channel-OR-role rule and optional thread inheritance. The same policy serves initial and current authorization checks. User-facing access hints reference configured IDs, so renaming a channel or role does not require a code change. Only the optional community environment example contains community-specific policy labels.
+
+`AiDetectionProvider` exposes its name, minimum word count, optional character limit, and one cancellable analysis operation. The normalized `DetectionResult` keeps document-class probabilities separate from optional text fractions, alongside labeled segments with optional verified positions, usage, and optional observed balance. Missing data stays unavailable. To add a backend, implement that interface and add a configuration/composition branch with fixtures. Do not translate a confidence score into a fraction of AI-written text.
+
+The composition root constructs only enabled backends with configured keys. One service holds the available providers and all shared gates/sessions. One available provider is selected automatically; multiple providers add a required select field to the existing modal. File requests use a selection-only modal and retain bounded attachment metadata until submission/expiry. No attachment is downloaded before selection. A successful scan binds the result to its chosen backend; recovery, navigation, and sharing reuse that result. There is no automatic failover or live availability probing.
 
 ## Pangram adapter
 
@@ -23,21 +27,31 @@ The current contract assumption is one `POST /task` with the configured model an
 
 API contract, model access, and pricing still require live acceptance. Synthetic fixtures exercise the expected schema without claiming the provider has verified it. Until its offset convention is established, code-point and UTF-16 positions are checked against returned segment text. If both match different occurrences of repeated text, positions are omitted. The chart is omitted when positions cannot be verified; complete labels and text remain available. Overlaps and gaps are preserved rather than inferred to be human or forced into aggregate percentages.
 
-Costs are estimated as rounded-up 100-word blocks at the configured rate. The bot's Unicode word count may differ from billing. The approved initial release has no remaining-credit endpoint. It displays unavailable balance and links to API account information. A future verified balance can use the existing amount, unit, and observation timestamp fields; local scan counts must not fabricate an account balance.
+Costs are estimated as rounded-up 100-word blocks at the configured rate. The bot's Unicode word count may differ from billing. The approved initial Pangram release has no remaining-credit endpoint. It displays unavailable balance and links to API account information. A future verified balance can use the existing amount, unit, and observation timestamp fields; local scan counts must not fabricate an account balance.
+
+## GPTZero adapter
+
+The adapter follows the [official API reference](https://docs.gptzero.me/api-reference/) and its [OpenAPI schema](https://docs.gptzero.me/openapi/public.yaml), inspected on 2026-10-26. It sends one `POST /v2/predict/text` with `document`, optional `modelVersion`, and `x-api-key` authentication. Paid submissions never retry. The shared five-minute deadline covers analysis; responses are bounded to 4 MiB. The bot's 50-word minimum is local policy, not a claimed API minimum.
+
+As explained in the [GPTZero quickstart](https://docs.gptzero.me/quickstart/), class probabilities concern the entire document. Reports label them separately and leave text fractions unavailable. Only the provider's sentence highlight flag marks AI; masked or unhighlighted sentences remain unknown. Sentence order must reconstruct the analyzed text exactly, permitting only whitespace gaps, before chart positions are retained. Missing or altered sentences suppress positions without losing their text or labels.
+
+After a successful scan, one best-effort `GET /v3/usage-stats` reads `data.words_left`, with a ten-second timeout and 64 KiB response limit. A finite nonnegative value becomes an observed balance in words; failed, malformed or null quota data stays unavailable. The schema uses null for unmetered API plans; it must not become zero credit. The report survives usage-lookup failure. Scan usage is an estimated word count; optional cost is words / 1,000 times the configured rate, without block rounding. Account compatibility, model access, retention and actual charges still require authorized live acceptance.
 
 ## Report state and privacy
 
-Submission gates and report sessions are bounded and in memory. Modal/file paths share one scan service. Invalid input does not start the paid submission cooldown. At most two scans run at once, one per user, with 60 seconds between submissions. At most 100 sessions are kept, and older inactive ones can be evicted.
+Submission gates and report sessions are bounded and in memory. Modal/file paths and both providers share one scan service. Changing providers cannot bypass per-user cooldown or global concurrency. Invalid input does not start the paid submission cooldown. At most two scans run at once, one per user, with 60 seconds between submissions. At most 100 sessions are kept, and older inactive ones can be evicted.
 
 Controls are bound to requester, guild, channel, and message. Authorization fetches current member/channel state; private-thread membership bypasses the SDK cache. Reports are ephemeral until the requester explicitly shares the summary, chart, and complete text attachment. Public posting rechecks both requester and bot permissions. Mention parsing is disabled.
 
 A failed initial delivery retries the same response, then checks whether Discord already received it. Unconfirmed completed reports can be recovered through `/ai-check` without a new scan until expiry. Sharing uses a synchronous lock and stable nonce. A definite rejection can be retried; an ambiguous outcome disables further posting for that report. Segment pages are generated once per navigation action and never for summary views.
 
-Input attachments are fetched only from Discord attachment hosts, without redirects, with strict UTF-8 decoding and streaming size enforcement. The bot does not fetch Reddit URLs. Pasted text goes to the detector, and reports go to Discord. Ephemeral visibility does not prevent either service from receiving the text or determine their retention policies.
+Input attachments are fetched only from Discord attachment hosts, without redirects, with strict UTF-8 decoding and streaming size enforcement. The bot does not fetch source-post URLs. Pasted text goes to the detector, and reports go to Discord. Ephemeral visibility does not prevent either service from receiving the text or determine their retention policies.
 
 Reports expire at the earlier of ten minutes after completion or fourteen minutes after the analysis interaction began. Expiry/restart removes bot-side state, not messages or attachments already delivered. Shutdown drains active handlers before aborting remaining local provider requests. No task recovery or automatic resubmission occurs after restart.
 
 Only fixed operational messages and safe outcome codes are logged. SDK errors, tokens, raw provider responses, pasted text, and interaction payloads are never logged. The private error boundary exposes only deliberately user-facing errors; unexpected failures use a generic private message. There is no command telemetry.
+
+The client subscribes only to Guilds events. Message caching is disabled; user and per-guild member caches are capped at 200 and preserve the bot's own entries. Guild, channel, role, and permission caches retain SDK defaults. The SDK owns reconnects and Discord rate-limit handling; the service's scan cooldown and concurrency limit control provider submissions independently. The local heartbeat requires both Gateway readiness and availability of the configured guild.
 
 ## Verification and upkeep
 
@@ -45,6 +59,6 @@ All tests preload a network blocker for fetch, HTTP(S), sockets, TLS, and WebSoc
 
 The final container smoke test runs non-root, read-only, without credentials or networking. It loads the compiled modules, checks production-only dependencies, native fonts and chart rendering, and heartbeat behavior. CI installs dependencies with the lockfile and audits production packages. GitHub Actions use full commit pins; Dependabot proposes npm, Docker, and Actions updates. Keep `.node-version`, `package.json`'s engine range, and both Docker base stages aligned when updating Node.
 
-Release images are published only after verification. No CI or publishing job uses Discord/Pangram credentials, starts the bot, registers commands, or deploys a host.
+CI and publishing use one composite verification action. Publishing tags and pushes the exact image that passed verification in that job, with no second build. No CI or publishing job uses Discord/provider credentials, starts the bot, registers commands, or deploys a host.
 
-References: [Node release policy](https://github.com/nodejs/Release), [discord.js stable releases](https://github.com/discordjs/discord.js/releases), and the pinned dependency source/type definitions used by the tests.
+References: [Discord guidance review](discord-review.md), [Node release policy](https://github.com/nodejs/Release), [discord.js stable releases](https://github.com/discordjs/discord.js/releases), and the pinned dependency source/type definitions used by the tests.

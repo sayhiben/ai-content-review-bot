@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { validateText } from "./input";
+import { TextAttachment, validateText } from "./input";
 import { AiCheckError, AiDetectionProvider, DetectionResult, LIMITS } from "./types";
 
 export interface RequestContext { userId: string; guildId: string; channelId: string }
@@ -7,6 +7,8 @@ export interface ReportSession extends RequestContext {
   id: string;
   expiresAt: number;
   phase: "input" | "running" | "ready";
+  providerId?: string;
+  attachment?: TextAttachment;
   submittedText?: string;
   result?: DetectionResult;
   completedAt?: number;
@@ -29,12 +31,15 @@ export class AiCheckService {
   private readonly submissions = new Map<string, number>();
   private readonly cleanupTimer: ReturnType<typeof setInterval>;
   private readonly shutdown = new AbortController();
+  private readonly providers: ReadonlyMap<string, AiDetectionProvider>;
 
   constructor(
-    private readonly provider: AiDetectionProvider,
+    providers: Record<string, AiDetectionProvider>,
     private readonly now: () => number = Date.now,
     private readonly log: (outcome: string) => void = () => undefined,
   ) {
+    this.providers = new Map(Object.entries(providers));
+    if (!this.providers.size) throw new AiCheckError("unavailable", "No AI detection provider is configured and available. Contact a bot administrator.");
     this.cleanupTimer = setInterval(() => this.cleanup(), 30_000);
     this.cleanupTimer.unref();
   }
@@ -47,8 +52,9 @@ export class AiCheckService {
     this.submissions.clear();
   }
 
-  get providerName(): string { return this.provider.name; }
-  get minimumWords(): number { return this.provider.minimumWords; }
+  get providerChoices() {
+    return [...this.providers].map(([id, provider]) => ({ id, name: provider.name, minimumWords: provider.minimumWords }));
+  }
 
   pendingDelivery(context: RequestContext): ReportSession | undefined {
     this.cleanup();
@@ -56,7 +62,7 @@ export class AiCheckService {
       session.userId === context.userId && session.guildId === context.guildId && session.channelId === context.channelId);
   }
 
-  create(context: RequestContext, interactionId: string): ReportSession {
+  create(context: RequestContext, interactionId: string, attachment?: TextAttachment): ReportSession {
     if (this.shutdown.signal.aborted) throw new AiCheckError("shutdown", "The bot is restarting. Please try later.");
     this.cleanup();
     if (this.interactions.has(interactionId)) throw new AiCheckError("duplicate", "This request has already been received.");
@@ -71,6 +77,8 @@ export class AiCheckService {
     const session: ReportSession = {
       ...context, id: randomBytes(12).toString("hex"), expiresAt: this.now() + LIMITS.reportMs,
       phase: "input", share: "available",
+      providerId: this.providers.size === 1 ? this.providers.keys().next().value : undefined,
+      attachment: attachment ? { name: attachment.name, size: attachment.size, url: attachment.url } : undefined,
     };
     this.sessions.set(session.id, session);
     return session;
@@ -86,9 +94,13 @@ export class AiCheckService {
     return session;
   }
 
-  async analyze(session: ReportSession, loadText: (signal: AbortSignal) => Promise<string>, responseCreatedAt: number): Promise<void> {
+  async analyze(session: ReportSession, loadText: (signal: AbortSignal) => Promise<string>, responseCreatedAt: number, providerId = session.providerId): Promise<void> {
     this.get(session.id, session);
     if (session.phase !== "input") throw new AiCheckError("duplicate", "This request has already been submitted.");
+    const provider = providerId ? this.providers.get(providerId) : undefined;
+    if (!provider || (session.providerId && session.providerId !== providerId)) {
+      throw new AiCheckError("provider", "Select an available provider. No scan was submitted.");
+    }
     const user = session.userId;
     if (this.activeUsers.has(user)) throw new AiCheckError("active", "You already have a scan in progress.");
     if (this.activeUsers.size >= LIMITS.concurrent) throw new AiCheckError("busy", "Two scans are already in progress. Please try again shortly.");
@@ -98,14 +110,19 @@ export class AiCheckService {
     }
     // No await between checking and reserving: modal/file paths share the same gates.
     this.activeUsers.add(user);
+    session.providerId = providerId;
     session.phase = "running";
     try {
       const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(LIMITS.analysisMs)]);
       const text = await loadText(signal);
       signal.throwIfAborted();
-      validateText(text, this.provider.minimumWords);
+      validateText(text, provider.minimumWords);
+      if (provider.maximumCharacters && text.length > provider.maximumCharacters) {
+        throw new AiCheckError("long", `This provider accepts at most ${provider.maximumCharacters.toLocaleString("en-US")} characters. No scan was submitted.`);
+      }
       this.submissions.set(user, this.now());
-      const result = await this.provider.analyze(text, { signal });
+      const result = await provider.analyze(text, { signal });
+      session.attachment = undefined;
       session.submittedText = text;
       session.result = result;
       session.completedAt = this.now();

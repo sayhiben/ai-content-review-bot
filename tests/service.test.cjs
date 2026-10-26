@@ -5,7 +5,7 @@ const { text, result, context } = require('./fixtures.cjs');
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const setup = t => {
   let now = 1_000_000, calls = 0;
-  const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async source => { calls++; return result(source); } }, () => now);
+  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async source => { calls++; return result(source); } } }, () => now);
   t.after(() => service.dispose());
   return { service, calls: () => calls, now: () => now, tick: ms => { now += ms; } };
 };
@@ -13,11 +13,11 @@ const setup = t => {
 test('shutdown cancels an active provider request and prevents new submissions', async () => {
   let started;
   const ready = new Promise(resolve => { started = resolve; });
-  const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async (_text, { signal }) => {
+  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async (_text, { signal }) => {
     started();
     await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
     return result();
-  } });
+  } } });
   const scan = service.analyze(service.create(context, 'shutdown'), async () => text, Date.now());
   await ready; service.dispose();
   await assert.rejects(scan);
@@ -46,7 +46,7 @@ test('deduplicates interactions, binds owner/guild/channel, and does not charge 
 
 test('reserves one user and two global slots atomically; releases slots on errors', async t => {
   const gate = deferred();
-  const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async () => { await gate.promise; return result(); } });
+  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async () => { await gate.promise; return result(); } } });
   t.after(() => service.dispose());
   const first = service.create(context, '1');
   const second = service.create({ ...context, userId: 'second' }, '2');
@@ -116,4 +116,36 @@ test('definite publish rejection permits retry; ambiguous failure permanently lo
   await assert.rejects(s.service.publish(session, async () => { throw new Error('lost response'); }), { code: 'share_unknown' });
   await assert.rejects(s.service.publish(session, async () => assert.fail('must not send again')), { code: 'share_unknown' });
   assert.equal(s.calls(), 1);
+});
+
+test('provider choice shares cooldown, per-user and global reservations; never falls back', async t => {
+  let now = 1000; const calls = [], gate = deferred();
+  const service = new AiCheckService({
+    pangram: { name: 'Pangram', minimumWords: 50, analyze: async () => { calls.push('pangram'); await gate.promise; return result(); } },
+    gptzero: { name: 'GPTZero', minimumWords: 50, analyze: async () => { calls.push('gptzero'); throw new Error('SECRET'); } },
+  }, () => now);
+  t.after(() => service.dispose());
+  const first = service.create(context, '1'), second = service.create(context, '2');
+  await assert.rejects(service.analyze(first, async () => text, now), { code: 'provider' });
+  await assert.rejects(service.analyze(first, async () => text, now, 'constructor'), { code: 'provider' });
+  const a = service.analyze(first, async () => text, now, 'pangram');
+  await assert.rejects(service.analyze(second, async () => text, now, 'gptzero'), { code: 'active' });
+  const b = service.analyze(service.create({ ...context, userId: 'second' }, '3'), async () => text, now, 'pangram');
+  await assert.rejects(service.analyze(service.create({ ...context, userId: 'third' }, '4'), async () => text, now, 'gptzero'), { code: 'busy' });
+  gate.resolve(); await a; await b;
+  await assert.rejects(service.analyze(second, async () => text, now, 'gptzero'), { code: 'cooldown' });
+  now += 60_000;
+  await assert.rejects(service.analyze(second, async () => text, now, 'gptzero'), { code: 'analysis' });
+  assert.deepEqual(calls, ['pangram', 'pangram', 'gptzero']);
+  assert.equal(first.providerId, 'pangram');
+});
+
+test('provider input limits apply before the shared paid submission cooldown', async t => {
+  const calls = [];
+  const service = new AiCheckService({ limited: { name: 'Limited', minimumWords: 1, maximumCharacters: 20, analyze: async input => { calls.push(input); return result(input); } } });
+  t.after(() => service.dispose());
+  await assert.rejects(service.analyze(service.create(context, 'long'), async () => 'x'.repeat(21), Date.now()), { code: 'long' });
+  await service.analyze(service.create(context, 'valid'), async () => 'Short valid text', Date.now());
+  assert.deepEqual(calls, ['Short valid text']);
+  assert.throws(() => new AiCheckService({}), { code: 'unavailable' });
 });

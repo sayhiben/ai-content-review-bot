@@ -1,13 +1,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { MessageFlags, PermissionFlagsBits } = require('discord.js');
+const { MessageFlags, PermissionFlagsBits, ModalSubmitFields, ComponentType } = require('discord.js');
 const { AiCheckService } = require('../dist/aiDetection/AiCheckService');
-const { AiCheckInteractions, authorized } = require('../dist/aiDetection/interactions');
+const { AiCheckInteractions } = require('../dist/aiDetection/interactions');
+const { authorized } = require('../dist/discord/access');
 const { aiCheckBuilder } = require('../dist/discord/command');
 const { respondPrivateError } = require('../dist/discord/privateErrors');
-const { result, text } = require('./fixtures.cjs');
+const { result, text, access } = require('./fixtures.cjs');
 
-const access = { guildId: 'guild', channelId: 'chat', roleId: 'subreddit-mod' };
 function harness(t, changes = {}) {
   const calls = { edits: [], replies: [], followups: [], modals: [], sends: [], defers: [], analyses: 0 };
   const state = { roles: [], channelId: 'chat', parentId: null, canView: true, canSend: true, botAttach: true, privateThread: false, member: true, ...changes };
@@ -28,14 +28,17 @@ function harness(t, changes = {}) {
     } },
     send: async payload => { calls.sends.push(payload); if (state.sendError) throw state.sendError; return { id: 'public', url: 'https://discord.com/channels/guild/chat/public' }; },
   };
-  const service = new AiCheckService({ name: 'Fixture provider', minimumWords: 50, analyze: async source => { calls.analyses++; return { ...result(source), billingUrl: 'https://example.invalid/billing' }; } });
+  const service = new AiCheckService(changes.providers ?? { fixture: { name: 'Fixture provider', minimumWords: 50, analyze: async source => { calls.analyses++; return { ...result(source), billingUrl: 'https://example.invalid/billing' }; } } });
   t.after(() => service.dispose());
-  const handlers = new AiCheckInteractions(service, access, async () => new Response(text), changes.chart);
+  const handlers = new AiCheckInteractions(service, { ...access, ...changes.access }, changes.fetcher ?? (async () => new Response(text)), changes.chart);
   const interaction = (kind, extra = {}) => {
     const i = {
       id: Math.random().toString(), guildId: 'guild', channelId: state.channelId, channel,
       user: { id: 'requester' }, member: { roles: [...state.roles] },
-      guild: { members: { fetch: async () => member(), fetchMe: async () => ({ id: 'bot' }) }, channels: { fetch: async () => channel } },
+      guild: {
+        members: { fetch: async () => { assert.equal(i.deferred, true, 'acknowledge before fetching member'); return member(); }, fetchMe: async () => ({ id: 'bot' }) },
+        channels: { fetch: async () => { assert.equal(i.deferred, true, 'acknowledge before fetching channel'); return channel; } },
+      },
       createdTimestamp: Date.now(), message: { id: 'private' }, deferred: false, replied: false,
       options: { getAttachment: () => null }, fields: { getTextInputValue: () => text },
       isChatInputCommand: () => kind === 'slash', isModalSubmit: () => kind === 'modal', isButton: () => kind === 'button',
@@ -65,8 +68,8 @@ function harness(t, changes = {}) {
 test('exact channel/role OR rule, including threads, with no administrator bypass', () => {
   assert.equal(authorized(access, 'guild', 'chat', null, []), true);
   assert.equal(authorized(access, 'guild', 'thread', 'chat', []), true);
-  assert.equal(authorized(access, 'guild', 'elsewhere', null, ['subreddit-mod']), true);
-  for (const args of [['other', 'chat', null, ['subreddit-mod']], [null, 'chat', null, []], ['guild', 'elsewhere', null, ['administrator']]]) {
+  assert.equal(authorized(access, 'guild', 'elsewhere', null, ['reviewer']), true);
+  for (const args of [['other', 'chat', null, ['reviewer']], [null, 'chat', null, []], ['guild', 'elsewhere', null, ['administrator']]]) {
     assert.equal(authorized(access, ...args), false);
   }
   const definition = aiCheckBuilder().setName('fixture').setDescription('Fixture').toJSON();
@@ -110,25 +113,39 @@ test('file input defers privately, reads once, and returns text even if chart re
 
 test('denied guild/DM/channel inputs stay private and never scan', async t => {
   const h = harness(t, { channelId: 'elsewhere' });
-  await assert.rejects(h.handlers.execute(h.interaction('slash')), { code: 'access' });
-  await assert.rejects(h.handlers.execute(h.interaction('slash', { guildId: null, guild: null })), { code: 'access' });
+  await assert.rejects(h.handlers.execute(h.interaction('slash')), { code: 'access', message: 'Use this command in <#chat> or its threads, or with the <@&reviewer> role in this server.' });
+  await assert.rejects(h.handlers.execute(h.interaction('slash', { guildId: null, guild: null })), { code: 'access', message: 'This command is available only in the configured server.' });
   assert.equal(h.calls.analyses, 0); assert.equal(h.calls.modals.length, 0);
 });
 
 test('supports uncached and cached member role representations outside allowed channel', async t => {
-  const h = harness(t, { channelId: 'elsewhere', roles: ['subreddit-mod'] });
+  const h = harness(t, { channelId: 'elsewhere', roles: ['reviewer'] });
   await h.handlers.execute(h.interaction('slash'));
-  await h.handlers.execute(h.interaction('slash', { member: { roles: { cache: new Map([['subreddit-mod', {}]]) } } }));
+  await h.handlers.execute(h.interaction('slash', { member: { roles: { cache: new Map([['reviewer', {}]]) } } }));
   assert.equal(h.calls.modals.length, 2);
 });
 
 test('authorization is checked again after opening a modal', async t => {
-  const h = harness(t, { channelId: 'elsewhere', roles: ['subreddit-mod'] });
+  const h = harness(t, { channelId: 'elsewhere', roles: ['reviewer'] });
   await h.handlers.execute(h.interaction('slash'));
   const customId = h.calls.modals[0].custom_id;
   h.state.roles = [];
   await assert.rejects(h.handlers.handle(h.interaction('modal', { customId })), { code: 'access' });
   assert.equal(h.calls.analyses, 0);
+});
+
+test('disabling thread inheritance preserves role access and current authorization checks', async t => {
+  const h = harness(t, { channelId: 'thread', parentId: 'chat', access: { allowThreads: false } });
+  await assert.rejects(h.scan(), { code: 'access', message: 'Use this command in <#chat>, or with the <@&reviewer> role in this server.' });
+  assert.equal(h.calls.analyses, 0);
+  h.state.roles = ['reviewer'];
+  const id = await h.scan();
+  assert.equal(h.calls.analyses, 1);
+  // Stale interaction roles must not authorize navigation after the real role was removed.
+  const button = h.interaction('button', { customId: `ai-check:page:${id}:0` });
+  h.state.roles = [];
+  await assert.rejects(h.handlers.handle(button), { code: 'access' });
+  assert.equal(authorized({ ...access, allowThreads: false }, 'guild', 'chat', null, []), true);
 });
 
 test('buttons enforce requester/message binding and reject expired state privately', async t => {
@@ -249,4 +266,68 @@ test('navigation paginates once per segment action and never paginates summaries
   assert.equal(calls, 1);
   await h.handlers.handle(h.interaction('button', { customId: `ai-check:summary:${id}` }));
   assert.equal(calls, 1);
+});
+
+const selectionFields = (provider, value = text) => new ModalSubmitFields([
+  { type: ComponentType.Label, component: { type: ComponentType.StringSelect, customId: 'provider', values: provider ? [provider] : [] } },
+  { type: ComponentType.Label, component: { type: ComponentType.TextInput, customId: 'text', value } },
+]);
+const twoProviders = calls => Object.fromEntries(['pangram', 'gptzero'].map(id => [id, {
+  name: id === 'pangram' ? 'Pangram' : 'GPTZero', minimumWords: 50,
+  analyze: async source => { calls.push({ id, source }); return { ...result(source), provider: id }; },
+}]));
+
+test('multiple backends use a required modal picker; only the selection scans and sharing does not rescan', async t => {
+  const scans = [], h = harness(t, { providers: twoProviders(scans) });
+  await h.handlers.execute(h.interaction('slash'));
+  const modal = h.calls.modals[0], picker = modal.components[0].component;
+  assert.equal(picker.type, ComponentType.StringSelect); assert.equal(picker.required, true);
+  assert.deepEqual(picker.options.map(o => o.value), ['pangram', 'gptzero']);
+  assert.ok(picker.options.every(o => o.default !== true));
+  assert.equal(modal.components.length, 2); assert.equal(scans.length, 0);
+  const submit = h.interaction('modal', { customId: modal.custom_id, fields: selectionFields('gptzero') });
+  await h.handlers.handle(submit);
+  assert.deepEqual(scans, [{ id: 'gptzero', source: text }]);
+  assert.equal(h.calls.defers[0].flags, MessageFlags.Ephemeral);
+  const id = modal.custom_id.split(':')[2];
+  await h.handlers.handle(h.interaction('button', { customId: `ai-check:share:${id}` }));
+  assert.equal(scans.length, 1); assert.equal(h.calls.sends.length, 1);
+  await assert.rejects(h.handlers.handle(submit), { code: 'duplicate' });
+});
+
+test('attachment input with two providers waits for selection before downloading or scanning', async t => {
+  const scans = []; let downloads = 0;
+  const h = harness(t, { providers: twoProviders(scans), fetcher: async () => { downloads++; return new Response(text); } });
+  await h.handlers.execute(h.interaction('slash', { options: { getAttachment: () => ({ name: 'post.txt', size: text.length, url: 'https://cdn.discordapp.com/attachments/fixture.txt' }) } }));
+  const modal = h.calls.modals[0];
+  assert.equal(modal.components.length, 1); assert.equal(downloads, 0); assert.equal(scans.length, 0);
+  await h.handlers.handle(h.interaction('modal', { customId: modal.custom_id, fields: selectionFields('pangram', 'must not use pasted text') }));
+  assert.equal(downloads, 1); assert.deepEqual(scans, [{ id: 'pangram', source: text }]);
+  const session = h.service.get(modal.custom_id.split(':')[2], { userId: 'requester', guildId: 'guild', channelId: 'chat' });
+  assert.equal(session.attachment, undefined);
+});
+
+test('picker rejects missing, forged, wrong-owner, expired and revoked choices before provider work', async t => {
+  const scans = [], h = harness(t, { providers: twoProviders(scans) });
+  await h.handlers.execute(h.interaction('slash'));
+  const customId = h.calls.modals[0].custom_id;
+  for (const provider of ['', 'disabled-provider', '__proto__']) {
+    await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields(provider) })), { code: 'provider' });
+  }
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields('pangram'), user: { id: 'other' } })), { code: 'owner' });
+  h.state.canView = false;
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields('pangram') })), { code: 'access' });
+  h.state.canView = true; h.service.dispose();
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields('pangram') })), { code: 'expired' });
+  assert.equal(scans.length, 0);
+});
+
+test('delivery recovery retains the selected provider and skips the picker', async t => {
+  const scans = [], h = harness(t, { providers: twoProviders(scans), editError: true });
+  await h.handlers.execute(h.interaction('slash'));
+  await h.handlers.handle(h.interaction('modal', { customId: h.calls.modals[0].custom_id, fields: selectionFields('gptzero') }));
+  h.state.editError = false;
+  await h.handlers.execute(h.interaction('slash'));
+  assert.equal(h.calls.modals.length, 1); assert.equal(scans.length, 1);
+  assert.match(h.calls.edits.at(-1).embeds[0].title, /gptzero/);
 });

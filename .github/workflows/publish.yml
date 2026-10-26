@@ -8,10 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  verify:
-    uses: ./.github/workflows/ci.yml
   publish:
-    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -21,18 +18,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build verified revision
-        run: docker build --build-arg REVISION="$GITHUB_SHA" -t ai-review-release .
-      - name: Publish immutable revision tag
+      - uses: ./.github/actions/verify
+        id: verify
+      - name: Publish verified image
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFIED_IMAGE: ${{ steps.verify.outputs.image }}
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker tag ai-review-release "$IMAGE:sha-$GITHUB_SHA"
+          docker tag "$VERIFIED_IMAGE" "$IMAGE:sha-$GITHUB_SHA"
           docker push "$IMAGE:sha-$GITHUB_SHA"
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            docker tag ai-review-release "$IMAGE:$GITHUB_REF_NAME"
+            docker tag "$VERIFIED_IMAGE" "$IMAGE:$GITHUB_REF_NAME"
             docker push "$IMAGE:$GITHUB_REF_NAME"
           fi
-          docker logout ghcr.io
+      - name: Clear registry login
+        if: always()
+        run: docker logout ghcr.io

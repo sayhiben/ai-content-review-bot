@@ -6,7 +6,7 @@ const signal = () => new AbortController().signal;
 const attachment = { name: 'comment.txt', size: 100, url: 'https://cdn.discordapp.com/attachments/fixture.txt' };
 
 test('Unicode word counts and inclusive minimum/maximum boundaries', () => {
-  assert.equal(wordCount('Café 🙂 Seattle'), 2);
+  assert.equal(wordCount('Café 🙂 garden'), 2);
   for (const n of [50, 5000]) assert.doesNotThrow(() => validateText('word '.repeat(n), 50));
   for (const [n, code] of [[49, 'short'], [5001, 'long']]) assert.throws(() => validateText('word '.repeat(n), 50), { code });
   assert.throws(() => validateText(' \n\t', 50), { code: 'empty' });

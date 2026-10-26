@@ -1,13 +1,19 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { Client, ThreadMemberManager, InteractionWebhook, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
+const { ThreadMemberManager, InteractionWebhook, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
+const { createBot } = require('../dist/bot');
 const { AiCheckService } = require('../dist/aiDetection/AiCheckService');
 const { AiCheckInteractions } = require('../dist/aiDetection/interactions');
-const { result, text, context } = require('./fixtures.cjs');
+const { result, text, context, access, config } = require('./fixtures.cjs');
+
+function productionClient(t) {
+  const bot = createBot(config(), { health: () => {}, clearHealth: () => {}, log: () => {} });
+  t.after(() => bot.stop());
+  return bot.client;
+}
 
 test('real SDK thread cache cannot authorize a removed private-thread member', async t => {
-  const client = new Client({ intents: [] });
-  t.after(() => client.destroy());
+  const client = productionClient(t);
   let requests = 0;
   client.rest.get = async () => { requests++; throw Object.assign(new Error('Synthetic missing member'), { status: 404 }); };
   const member = { id: 'requester', roles: { cache: new Map() } };
@@ -17,9 +23,9 @@ test('real SDK thread cache cannot authorize a removed private-thread member', a
   };
   channel.members = new ThreadMemberManager(channel);
   channel.members.cache.set(member.id, { id: member.id });
-  const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async () => assert.fail('must not scan') });
+  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async () => assert.fail('must not scan') } });
   t.after(() => service.dispose());
-  const handlers = new AiCheckInteractions(service, { guildId: 'guild', channelId: 'chat', roleId: 'mod' });
+  const handlers = new AiCheckInteractions(service, access);
   await assert.rejects(handlers.execute({
     id: 'input', user: member, member, guildId: 'guild', channelId: channel.id, channel,
     guild: { members: { fetch: async () => member }, channels: { fetch: async () => channel } },
@@ -29,8 +35,7 @@ test('real SDK thread cache cannot authorize a removed private-thread member', a
 });
 
 test('SDK webhook serialization preserves report attachments through private navigation', async t => {
-  const client = new Client({ intents: [] });
-  t.after(() => client.destroy());
+  const client = productionClient(t);
   const webhook = new InteractionWebhook(client, '12345678901234567', 'SYNTHETIC_TOKEN');
   const patches = [];
   let message = {
@@ -51,11 +56,11 @@ test('SDK webhook serialization preserves report attachments through private nav
     }
     return { ...message };
   };
-  const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async () => result() });
+  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async () => result() } });
   t.after(() => service.dispose());
   const session = service.create(context, 'scan');
   await service.analyze(session, async () => text, Date.now());
-  const handlers = new AiCheckInteractions(service, { guildId: 'guild', channelId: 'chat', roleId: 'mod' });
+  const handlers = new AiCheckInteractions(service, access);
   await handlers.deliver({
     user: { id: 'requester' }, guildId: 'guild', channelId: 'chat',
     editReply: payload => webhook.editMessage('@original', payload),
