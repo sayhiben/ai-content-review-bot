@@ -28,6 +28,14 @@ function boolean(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boole
   return value === "true";
 }
 
+function positiveNumber(env: NodeJS.ProcessEnv, name: string, fallback?: number): number | undefined {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) throw new ConfigurationError(`${name} must be a positive number.`);
+  return value;
+}
+
 export function registrationConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     token: required(env, "DISCORD_TOKEN"),
@@ -38,11 +46,24 @@ export function registrationConfig(env: NodeJS.ProcessEnv = process.env) {
 
 export function botConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const enabled = boolean(env, "AI_DETECTION_ENABLED", false);
-  if ((env.AI_DETECTION_PROVIDER ?? "pangram") !== "pangram") throw new ConfigurationError("AI_DETECTION_PROVIDER is unsupported.");
+  if (env.AI_DETECTION_PROVIDER !== undefined) throw new ConfigurationError("Replace AI_DETECTION_PROVIDER with PANGRAM_ENABLED and GPTZERO_ENABLED.");
   const model = env.PANGRAM_MODEL?.trim() ?? "pangram-4";
-  const usdPer100Words = Number(env.PANGRAM_USD_PER_100_WORDS ?? "0.05");
   if (!model) throw new ConfigurationError("PANGRAM_MODEL must not be empty.");
-  if (!Number.isFinite(usdPer100Words) || usdPer100Words <= 0) throw new ConfigurationError("PANGRAM_USD_PER_100_WORDS must be a positive number.");
+  const detection: AiDetectionConfig = {
+    enabled,
+    pangram: {
+      enabled: boolean(env, "PANGRAM_ENABLED", true), apiKey: env.PANGRAM_API_KEY?.trim() || undefined,
+      model, usdPer100Words: positiveNumber(env, "PANGRAM_USD_PER_100_WORDS", 0.05)!,
+    },
+    gptzero: {
+      enabled: boolean(env, "GPTZERO_ENABLED", false), apiKey: env.GPTZERO_API_KEY?.trim() || undefined,
+      modelVersion: env.GPTZERO_MODEL_VERSION?.trim() || undefined,
+      usdPer1000Words: positiveNumber(env, "GPTZERO_USD_PER_1000_WORDS"),
+    },
+  };
+  if (enabled && ![detection.pangram, detection.gptzero].some(provider => provider.enabled && provider.apiKey)) {
+    throw new ConfigurationError("AI_DETECTION_ENABLED requires an enabled provider with PANGRAM_API_KEY or GPTZERO_API_KEY.");
+  }
   return {
     token: required(env, "DISCORD_TOKEN"),
     access: {
@@ -51,9 +72,6 @@ export function botConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
       roleId: snowflake(env, "ALLOWED_ROLE_ID"),
       allowThreads: boolean(env, "ALLOW_CHANNEL_THREADS", true),
     },
-    detection: {
-      enabled, provider: "pangram", model, usdPer100Words,
-      apiKey: enabled ? required(env, "PANGRAM_API_KEY") : env.PANGRAM_API_KEY?.trim(),
-    },
+    detection,
   };
 }

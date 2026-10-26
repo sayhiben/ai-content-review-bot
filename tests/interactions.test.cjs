@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { MessageFlags, PermissionFlagsBits } = require('discord.js');
+const { MessageFlags, PermissionFlagsBits, ModalSubmitFields, ComponentType } = require('discord.js');
 const { AiCheckService } = require('../dist/aiDetection/AiCheckService');
 const { AiCheckInteractions } = require('../dist/aiDetection/interactions');
 const { authorized } = require('../dist/discord/access');
@@ -28,9 +28,9 @@ function harness(t, changes = {}) {
     } },
     send: async payload => { calls.sends.push(payload); if (state.sendError) throw state.sendError; return { id: 'public', url: 'https://discord.com/channels/guild/chat/public' }; },
   };
-  const service = new AiCheckService({ name: 'Fixture provider', minimumWords: 50, analyze: async source => { calls.analyses++; return { ...result(source), billingUrl: 'https://example.invalid/billing' }; } });
+  const service = new AiCheckService(changes.providers ?? { fixture: { name: 'Fixture provider', minimumWords: 50, analyze: async source => { calls.analyses++; return { ...result(source), billingUrl: 'https://example.invalid/billing' }; } } });
   t.after(() => service.dispose());
-  const handlers = new AiCheckInteractions(service, { ...access, ...changes.access }, async () => new Response(text), changes.chart);
+  const handlers = new AiCheckInteractions(service, { ...access, ...changes.access }, changes.fetcher ?? (async () => new Response(text)), changes.chart);
   const interaction = (kind, extra = {}) => {
     const i = {
       id: Math.random().toString(), guildId: 'guild', channelId: state.channelId, channel,
@@ -266,4 +266,68 @@ test('navigation paginates once per segment action and never paginates summaries
   assert.equal(calls, 1);
   await h.handlers.handle(h.interaction('button', { customId: `ai-check:summary:${id}` }));
   assert.equal(calls, 1);
+});
+
+const selectionFields = (provider, value = text) => new ModalSubmitFields([
+  { type: ComponentType.Label, component: { type: ComponentType.StringSelect, customId: 'provider', values: provider ? [provider] : [] } },
+  { type: ComponentType.Label, component: { type: ComponentType.TextInput, customId: 'text', value } },
+]);
+const twoProviders = calls => Object.fromEntries(['pangram', 'gptzero'].map(id => [id, {
+  name: id === 'pangram' ? 'Pangram' : 'GPTZero', minimumWords: 50,
+  analyze: async source => { calls.push({ id, source }); return { ...result(source), provider: id }; },
+}]));
+
+test('multiple backends use a required modal picker; only the selection scans and sharing does not rescan', async t => {
+  const scans = [], h = harness(t, { providers: twoProviders(scans) });
+  await h.handlers.execute(h.interaction('slash'));
+  const modal = h.calls.modals[0], picker = modal.components[0].component;
+  assert.equal(picker.type, ComponentType.StringSelect); assert.equal(picker.required, true);
+  assert.deepEqual(picker.options.map(o => o.value), ['pangram', 'gptzero']);
+  assert.ok(picker.options.every(o => o.default !== true));
+  assert.equal(modal.components.length, 2); assert.equal(scans.length, 0);
+  const submit = h.interaction('modal', { customId: modal.custom_id, fields: selectionFields('gptzero') });
+  await h.handlers.handle(submit);
+  assert.deepEqual(scans, [{ id: 'gptzero', source: text }]);
+  assert.equal(h.calls.defers[0].flags, MessageFlags.Ephemeral);
+  const id = modal.custom_id.split(':')[2];
+  await h.handlers.handle(h.interaction('button', { customId: `ai-check:share:${id}` }));
+  assert.equal(scans.length, 1); assert.equal(h.calls.sends.length, 1);
+  await assert.rejects(h.handlers.handle(submit), { code: 'duplicate' });
+});
+
+test('attachment input with two providers waits for selection before downloading or scanning', async t => {
+  const scans = []; let downloads = 0;
+  const h = harness(t, { providers: twoProviders(scans), fetcher: async () => { downloads++; return new Response(text); } });
+  await h.handlers.execute(h.interaction('slash', { options: { getAttachment: () => ({ name: 'post.txt', size: text.length, url: 'https://cdn.discordapp.com/attachments/fixture.txt' }) } }));
+  const modal = h.calls.modals[0];
+  assert.equal(modal.components.length, 1); assert.equal(downloads, 0); assert.equal(scans.length, 0);
+  await h.handlers.handle(h.interaction('modal', { customId: modal.custom_id, fields: selectionFields('pangram', 'must not use pasted text') }));
+  assert.equal(downloads, 1); assert.deepEqual(scans, [{ id: 'pangram', source: text }]);
+  const session = h.service.get(modal.custom_id.split(':')[2], { userId: 'requester', guildId: 'guild', channelId: 'chat' });
+  assert.equal(session.attachment, undefined);
+});
+
+test('picker rejects missing, forged, wrong-owner, expired and revoked choices before provider work', async t => {
+  const scans = [], h = harness(t, { providers: twoProviders(scans) });
+  await h.handlers.execute(h.interaction('slash'));
+  const customId = h.calls.modals[0].custom_id;
+  for (const provider of ['', 'disabled-provider', '__proto__']) {
+    await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields(provider) })), { code: 'provider' });
+  }
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields('pangram'), user: { id: 'other' } })), { code: 'owner' });
+  h.state.canView = false;
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields('pangram') })), { code: 'access' });
+  h.state.canView = true; h.service.dispose();
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId, fields: selectionFields('pangram') })), { code: 'expired' });
+  assert.equal(scans.length, 0);
+});
+
+test('delivery recovery retains the selected provider and skips the picker', async t => {
+  const scans = [], h = harness(t, { providers: twoProviders(scans), editError: true });
+  await h.handlers.execute(h.interaction('slash'));
+  await h.handlers.handle(h.interaction('modal', { customId: h.calls.modals[0].custom_id, fields: selectionFields('gptzero') }));
+  h.state.editError = false;
+  await h.handlers.execute(h.interaction('slash'));
+  assert.equal(h.calls.modals.length, 1); assert.equal(scans.length, 1);
+  assert.match(h.calls.edits.at(-1).embeds[0].title, /gptzero/);
 });

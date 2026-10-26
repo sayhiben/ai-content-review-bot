@@ -23,7 +23,7 @@ test('real SDK thread cache cannot authorize a removed private-thread member', a
   };
   channel.members = new ThreadMemberManager(channel);
   channel.members.cache.set(member.id, { id: member.id });
-  const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async () => assert.fail('must not scan') });
+  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async () => assert.fail('must not scan') } });
   t.after(() => service.dispose());
   const handlers = new AiCheckInteractions(service, access);
   await assert.rejects(handlers.execute({
@@ -56,7 +56,7 @@ test('SDK webhook serialization preserves report attachments through private nav
     }
     return { ...message };
   };
-  const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async () => result() });
+  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async () => result() } });
   t.after(() => service.dispose());
   const session = service.create(context, 'scan');
   await service.analyze(session, async () => text, Date.now());

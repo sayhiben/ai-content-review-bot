@@ -25,7 +25,7 @@ test('disabled feature responds privately without constructing or calling a prov
 test('one feature boundary handles command, modal, and component errors privately', async t => {
   let scans = 0, modal;
   const edits = [], replies = [];
-  const feature = createAiCheckFeature(config(), { provider: { name: 'Fixture', minimumWords: 50, analyze: async input => { scans++; return result(input); } } });
+  const feature = createAiCheckFeature(config(), { providers: { fixture: { name: 'Fixture', minimumWords: 50, analyze: async input => { scans++; return result(input); } } } });
   t.after(() => feature.dispose());
   const channel = { id: 'chat', isThread: () => false, permissionsFor: () => ({ has: () => true }) };
   const member = { id: 'requester', roles: { cache: new Map() } };
@@ -48,4 +48,33 @@ test('one feature boundary handles command, modal, and component errors privatel
   await feature.handleInteraction({ ...input, isChatInputCommand: () => false, isButton: () => true, customId: 'ai-check:invalid', deferUpdate: async () => { throw new Error('SECRET_TOKEN'); } });
   assert.ok(!replies.at(-1).content.includes('SECRET')); assert.equal(replies.at(-1).flags, MessageFlags.Ephemeral);
   await feature.handleInteraction({ ...input, commandName: 'unrelated', reply: () => assert.fail('must ignore') });
+});
+
+test('configured availability determines automatic provider or picker without health probes', async t => {
+  for (const [pangramEnabled, pangramKey, zeroEnabled, zeroKey, expected] of [
+    [true, 'TEST', false, 'TEST', ['Pangram']],
+    [false, 'TEST', true, 'TEST', ['GPTZero']],
+    [true, undefined, true, 'TEST', ['GPTZero']],
+    [true, 'TEST', true, 'TEST', ['Pangram', 'GPTZero']],
+    [false, 'TEST', false, 'TEST', []],
+  ]) {
+    const settings = config();
+    Object.assign(settings.detection.pangram, { enabled: pangramEnabled, apiKey: pangramKey });
+    Object.assign(settings.detection.gptzero, { enabled: zeroEnabled, apiKey: zeroKey });
+    const feature = createAiCheckFeature(settings, { fetcher: () => assert.fail('configuration must not probe services') });
+    t.after(() => feature.dispose());
+    let modal, reply;
+    await feature.handleInteraction({
+      id: 'command', commandName: 'ai-check', guildId: 'guild', channelId: 'chat', channel: { isThread: () => false },
+      user: { id: 'requester' }, member: { roles: [] },
+      isChatInputCommand: () => true, isButton: () => false, isModalSubmit: () => false,
+      options: { getAttachment: () => null }, showModal: async m => { modal = m.toJSON(); }, reply: async p => { reply = p; },
+    });
+    if (expected.length === 2) assert.deepEqual(modal.components[0].component.options.map(o => o.label), expected);
+    else if (expected.length === 1) {
+      assert.equal(modal.components.length, 1); assert.equal(modal.components[0].label, `Text to send to ${expected[0]}`);
+    } else {
+      assert.equal(modal, undefined); assert.equal(reply.flags, MessageFlags.Ephemeral); assert.match(reply.content, /No AI detection provider/);
+    }
+  }
 });

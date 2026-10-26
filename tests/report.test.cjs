@@ -19,6 +19,8 @@ test('small nonzero fractions stay visible and reported balances include units a
   r.balance = { amount: 12.5, unit: 'USD', observedAt: 0 };
   assert.match(summaryEmbed(session(r)).fields[0].value, /<0.1%/);
   assert.match(budgetText(r), /12.5 USD \(observed 1970/);
+  r.usage = { estimated: true, units: 100, unit: 'words', cost: { amount: .001, currency: 'USD' } };
+  assert.match(budgetText(r), /<0.01 USD/);
 });
 
 test('long segments paginate within Discord limits after escaping; full attachment preserves original', () => {
@@ -54,6 +56,7 @@ test('chart is an actual PNG and rendering failure still delivers complete text'
 
 test('summary fields fit individual and aggregate Discord limits with hostile provider strings', () => {
   const r = result(); r.provider = '*'.repeat(10_000); r.explanation = '@everyone'.repeat(10_000); r.model = 'm'.repeat(5000);
+  r.documentProbabilities = { ai: .1, mixed: .7, human: .2 };
   const e = summaryEmbed(session(r));
   assert.ok(e.title.length <= 256); assert.ok(e.description.length <= 4096);
   assert.ok(e.fields.every(f => f.value.length <= 1024));

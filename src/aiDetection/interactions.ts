@@ -1,6 +1,6 @@
 import {
   ActionRowBuilder, LabelBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder,
+  ModalBuilder, TextInputBuilder, StringSelectMenuBuilder,
 } from "discord.js";
 import {
   MessageFlags, PermissionFlagsBits, TextInputStyle, ChannelType,
@@ -39,18 +39,28 @@ export class AiCheckInteractions {
       await this.currentAccess(interaction);
       if (attachment) throw new AiCheckError("delivery_pending", "Your previous analysis completed but its report could not be delivered. Run /ai-check without a file to recover it before submitting another scan.");
       await this.deliver(interaction, pending);
-    } else if (attachment) {
+    } else if (attachment && this.service.providerChoices.length === 1) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await this.currentAccess(interaction);
       const session = this.service.create(this.context(interaction), interaction.id);
       await this.analyze(interaction, session, signal => readTextAttachment(attachment, signal, this.fetcher));
     } else {
-      const session = this.service.create(this.context(interaction), interaction.id);
-      const modal = new ModalBuilder().setCustomId(`ai-check:input:${session.id}`).setTitle("Check text for AI")
-        .addLabelComponents(new LabelBuilder().setLabel(`Text to send to ${this.service.providerName}`)
-          .setDescription(`${this.service.minimumWords}+ words. Your report is private until you choose to post it.`)
+      const session = this.service.create(this.context(interaction), interaction.id, attachment ?? undefined);
+      const choices = this.service.providerChoices;
+      const modal = new ModalBuilder().setCustomId(`ai-check:input:${session.id}`).setTitle("Check text for AI");
+      if (choices.length > 1) {
+        modal.addLabelComponents(new LabelBuilder().setLabel("AI detection provider")
+          .setDescription("Only your chosen provider receives the text. Your report starts private.")
+          .setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId("provider")
+            .setPlaceholder("Choose a provider").setRequired(true).setMinValues(1).setMaxValues(1)
+            .addOptions(choices.map(provider => ({ label: provider.name, value: provider.id, description: `${provider.minimumWords}+ words` })))));
+      }
+      if (!attachment) {
+        modal.addLabelComponents(new LabelBuilder().setLabel(choices.length === 1 ? `Text to send to ${choices[0].name}` : "Text to send to your chosen provider")
+          .setDescription(`${Math.min(...choices.map(provider => provider.minimumWords))}+ words. Your report is private until you choose to post it.`)
           .setTextInputComponent(new TextInputBuilder().setCustomId("text").setStyle(TextInputStyle.Paragraph)
             .setRequired(true).setMaxLength(LIMITS.modalCharacters)));
+      }
       await interaction.showModal(modal);
     }
   }
@@ -68,7 +78,9 @@ export class AiCheckInteractions {
     if (interaction.isModalSubmit()) {
       if (action !== "input") throw new AiCheckError("control", "This input form is invalid.");
       await this.currentAccess(interaction);
-      await this.analyze(interaction, session, async () => interaction.fields.getTextInputValue("text"));
+      const providerId = session.providerId ?? interaction.fields.getStringSelectValues("provider")[0];
+      await this.analyze(interaction, session, signal => session.attachment ? readTextAttachment(session.attachment, signal, this.fetcher) :
+        Promise.resolve(interaction.fields.getTextInputValue("text")), providerId);
       return;
     }
     if (session.phase !== "ready" || session.messageId !== interaction.message.id || action === "input") {
@@ -119,8 +131,8 @@ export class AiCheckInteractions {
     return { member, channel };
   }
 
-  private async analyze(interaction: InputInteraction, session: ReportSession, loadText: (signal: AbortSignal) => Promise<string>) {
-    await this.service.analyze(session, loadText, interaction.createdTimestamp);
+  private async analyze(interaction: InputInteraction, session: ReportSession, loadText: (signal: AbortSignal) => Promise<string>, providerId = session.providerId) {
+    await this.service.analyze(session, loadText, interaction.createdTimestamp, providerId);
     await this.deliver(interaction, session);
   }
 

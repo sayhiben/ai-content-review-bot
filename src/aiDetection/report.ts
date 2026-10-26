@@ -15,10 +15,16 @@ export function budgetText(result: DetectionResult): string {
   const usage = result.usage;
   const cost = usage?.cost;
   const balance = result.balance;
+  const costText = cost ? `${cost.amount > 0 && cost.amount < 0.01 ? "<0.01" : cost.amount.toFixed(2)} ${cost.currency}` : "cost unavailable";
   return [
-    usage ? `${usage.estimated ? "Estimated" : "Reported"} usage: ${usage.units} ${usage.unit}${cost ? ` · ${cost.amount.toFixed(2)} ${cost.currency}` : ""}` : "Scan usage/cost: unavailable",
+    usage ? `${usage.estimated ? "Estimated" : "Reported"} usage: ${usage.units} ${usage.unit} · ${costText}` : "Scan usage/cost: unavailable",
     balance ? `Remaining API balance: ${balance.amount} ${balance.unit} (observed ${new Date(balance.observedAt).toISOString()})` : `Remaining ${result.provider} API balance: unavailable`,
   ].join("\n");
+}
+
+function documentProbabilityText(result: DetectionResult): string | undefined {
+  const p = result.documentProbabilities;
+  return p ? `AI-only: ${percent(p.ai)}; Mixed: ${percent(p.mixed)}; Human-only: ${percent(p.human)}\nThese are document-class probabilities, not percentages of text.` : undefined;
 }
 
 export function summaryEmbed(session: ReportSession, publicReport = false) {
@@ -28,7 +34,8 @@ export function summaryEmbed(session: ReportSession, publicReport = false) {
     description: clip(escape(r.explanation), 2_000),
     color: 0x00796b,
     fields: [
-      { name: "Text classified as", value: `AI-generated: **${percent(r.textFractions?.ai)}**\nAI-assisted: **${percent(r.textFractions?.assisted)}**\nHuman: **${percent(r.textFractions?.human)}**` },
+      { name: "Text classified as", value: !r.textFractions && r.documentProbabilities ? "Text percentages: unavailable from this provider." : `AI-generated: **${percent(r.textFractions?.ai)}**\nAI-assisted: **${percent(r.textFractions?.assisted)}**\nHuman: **${percent(r.textFractions?.human)}**` },
+      ...(r.documentProbabilities ? [{ name: "Document classification probabilities", value: documentProbabilityText(r)! }] : []),
       { name: "Analysis", value: clip(escape(`${r.provider} · ${r.model}${r.version ? ` · version ${r.version}` : ""}\n${wordCount(r.analyzedText)} words in analyzed text${r.analyzedText !== session.submittedText ? " · provider normalized the input" : ""}`), 1_000) },
       { name: "Shared API budget", value: clip(escape(budgetText(r)), 1_000) },
       ...(!r.segments.length ? [{ name: "Segments", value: "The provider did not return segment details." }] :
@@ -64,6 +71,7 @@ export function fullReport(session: ReportSession): Buffer {
     `AI detection report ${session.id}`, `${r.provider} / ${r.model} / ${r.version ?? "version unavailable"}`,
     new Date(session.completedAt!).toISOString(), r.headline, r.explanation,
     `AI-generated: ${percent(r.textFractions?.ai)}; AI-assisted: ${percent(r.textFractions?.assisted)}; Human: ${percent(r.textFractions?.human)}`,
+    ...(r.documentProbabilities ? [documentProbabilityText(r)!] : []),
     budgetText(r), "Detection is an estimate for human review.", "", "SUBMITTED TEXT", session.submittedText!,
   ];
   if (r.analyzedText !== session.submittedText) parts.push("", "ANALYZED TEXT (normalized by provider)", r.analyzedText);
