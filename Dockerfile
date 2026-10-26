@@ -1,4 +1,4 @@
-FROM node:24.22.1-bookworm-slim AS build
+FROM node:26.12.1-bookworm-slim AS build
 WORKDIR /app
 
 # Native canvas can use a prebuilt binary or compile from source on this platform.
@@ -12,7 +12,7 @@ COPY src ./src
 COPY tests ./tests
 RUN npm run check && npm prune --omit=dev --no-fund
 
-FROM node:24.22.1-bookworm-slim AS runtime
+FROM node:26.12.1-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends \
