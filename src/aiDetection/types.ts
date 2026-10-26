@@ -37,8 +37,8 @@ export interface AiDetectionProvider {
 
 export interface AiDetectionConfig {
   enabled: boolean;
-  guildId: string;
   provider: "pangram";
+  apiKey?: string;
   model: string;
   /** An estimate for this model only; recheck when changing models. */
   usdPer100Words: number;

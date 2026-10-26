@@ -1,10 +1,10 @@
 # AI Content Review Bot
 
-A standalone Discord bot for reviewing pasted Reddit posts and comments with an AI detector. It has its own application, credentials, deployment, and repository; SeaBot is not required.
+A standalone Discord bot for reviewing pasted posts, comments, and other text with an AI detector. It has its own application, credentials, deployment, and repository.
 
 `/ai-check` returns a **private report** with AI-generated, AI-assisted, and human text percentages; a segment chart; paginated excerpts; and a complete text attachment. The requester can explicitly post the same report to the original channel without another paid scan.
 
-Access is allowed in the configured `#subreddit-chat` channel and its direct child threads **or** for members with the configured **Subreddit Mod** role. DMs and other servers are rejected. Channel and role IDs, not names, determine access.
+Access is allowed in `ALLOWED_CHANNEL_ID` **or** for members with `ALLOWED_ROLE_ID`, within `DISCORD_GUILD_ID`. `ALLOW_CHANNEL_THREADS` controls whether the channel's direct child threads also qualify (default `true`). DMs and other servers are rejected. Access messages use the configured IDs; community names are never hardcoded.
 
 Pangram is the first backend. Its API behavior is isolated behind a small provider interface so another detector can be added without changing the Discord workflow. Percentages are shares of classified text, not probabilities that someone used AI. Reports support human review and never take moderation actions.
 
@@ -48,6 +48,8 @@ Follow [deployment and live acceptance](docs/deployment.md). In brief:
 3. Register the guild command explicitly with `npm run commands -- --apply`.
 4. Deploy exactly one instance with Docker Compose or the published container image.
 
+Community-specific mappings belong in configuration; [the optional Seattle example](examples/seattle.env.example) demonstrates one. The deployment guide includes the [environment migration](docs/deployment.md#environment) from the original variable names.
+
 `npm start` connects to Discord. `npm run commands -- --apply` writes to Discord. Neither belongs in offline tests or CI. The runtime never automatically registers or deletes commands.
 
 ## Command behavior and limits
@@ -60,10 +62,10 @@ Follow [deployment and live acceptance](docs/deployment.md). In brief:
 - Report controls expire within ten minutes after completion, before the Discord interaction token expires. Restarts lose in-memory reports. Up to 100 sessions are retained; older inactive sessions may be evicted.
 - A provider submission is never automatically retried. If its outcome is uncertain, a charge may still occur. Public sharing uses a lock and nonce; uncertain posting disables further attempts to avoid duplicates.
 
-See [architecture, privacy, and provider contracts](docs/architecture.md) for the implementation boundaries and current limitations.
+See [architecture, privacy, and provider contracts](docs/architecture.md) and the [Discord best-practices review](docs/discord-review.md) for implementation decisions and current limitations.
 
 ## Releases
 
-Every push to `main` and every pull request runs CI. A `v*` tag or manual **Publish container** workflow verifies the revision and publishes to `ghcr.io/sayhiben/ai-content-review-bot`, including a `sha-<full-commit>` tag. Publishing an image does not deploy or activate the bot. Deploy a verified digest and retain the previous digest for rollback.
+Every push to `main` and every pull request runs CI. A `v*` tag or manual **Publish container** workflow runs the same verification and publishes the exact image that passed its smoke test to `ghcr.io/sayhiben/ai-content-review-bot`, including a `sha-<full-commit>` tag. Publishing an image does not deploy or activate the bot. Deploy a verified digest and retain the previous digest for rollback.
 
 The initial release is extracted from the AI-detection work proposed in [SeaBot PR #274](https://github.com/reddit-seattle/seabot/pull/274). Relevant code is preserved under the MIT license, with the original notice retained in [LICENSE](LICENSE).

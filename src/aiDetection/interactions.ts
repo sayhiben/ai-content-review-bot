@@ -13,14 +13,9 @@ import { AiCheckService, PublishRejected, ReportSession, RequestContext } from "
 import { readTextAttachment } from "./input";
 import { reportFiles, segmentPages, summaryEmbed, segmentChart } from "./report";
 import { AiCheckError, Fetch, LIMITS } from "./types";
+import { AccessConfig, authorized, accessExplanation } from "../discord/access";
 
-export interface AccessConfig { guildId: string; channelId: string; roleId: string }
 type InputInteraction = ChatInputCommandInteraction | ModalSubmitInteraction;
-
-export function authorized(access: AccessConfig, guildId: string | null, channelId: string,
-  parentId: string | null | undefined, roles: string[]): boolean {
-  return guildId === access.guildId && (channelId === access.channelId || parentId === access.channelId || roles.includes(access.roleId));
-}
 
 function roleIds(member: ChatInputCommandInteraction["member"]): string[] {
   if (!member) return [];
@@ -51,7 +46,7 @@ export class AiCheckInteractions {
       await this.analyze(interaction, session, signal => readTextAttachment(attachment, signal, this.fetcher));
     } else {
       const session = this.service.create(this.context(interaction), interaction.id);
-      const modal = new ModalBuilder().setCustomId(`ai-check:input:${session.id}`).setTitle("Check Reddit text for AI")
+      const modal = new ModalBuilder().setCustomId(`ai-check:input:${session.id}`).setTitle("Check text for AI")
         .addLabelComponents(new LabelBuilder().setLabel(`Text to send to ${this.service.providerName}`)
           .setDescription(`${this.service.minimumWords}+ words. Your report is private until you choose to post it.`)
           .setTextInputComponent(new TextInputBuilder().setCustomId("text").setStyle(TextInputStyle.Paragraph)
@@ -97,7 +92,7 @@ export class AiCheckInteractions {
     const channel = interaction.channel;
     const parent = channel?.isThread() ? channel.parentId : undefined;
     if (!authorized(this.access, interaction.guildId, interaction.channelId!, parent, roleIds(interaction.member))) {
-      throw new AiCheckError("access", "Use this command in #subreddit-chat or its threads, or with the Subreddit Mod role in this server.");
+      throw new AiCheckError("access", accessExplanation(this.access, interaction.guildId));
     }
   }
 

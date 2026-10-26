@@ -15,6 +15,8 @@ health.ts -> local heartbeat only
 
 Runtime modules have no import-time login or command-registration side effects. The standalone bot uses stable discord.js, strict TypeScript, and Node's built-in test runner. There is no SeaBot router, server import, shared configuration, webpack bundle, plugin registry, queue, database, failover, or multi-provider scoring framework.
 
+Configuration has separate Discord `access` and `detection` sections. The feature receives only those sections; the lifecycle owns the Discord login token. A small pure policy in `discord/access.ts` implements the single-guild channel-OR-role rule and optional thread inheritance. The same policy serves initial and current authorization checks. User-facing access hints reference configured IDs, so renaming a channel or role does not require a code change. Only the optional community environment example contains community-specific policy labels.
+
 `AiDetectionProvider` exposes its name, minimum word count, and one cancellable analysis operation. The normalized `DetectionResult` contains optional text fractions, labeled segments with optional verified positions, usage, and optional observed balance. Missing data stays unavailable. To add a backend, implement that interface and add a configuration/composition branch with fixtures. Do not translate a confidence score into a fraction of AI-written text.
 
 ## Pangram adapter
@@ -33,11 +35,13 @@ Controls are bound to requester, guild, channel, and message. Authorization fetc
 
 A failed initial delivery retries the same response, then checks whether Discord already received it. Unconfirmed completed reports can be recovered through `/ai-check` without a new scan until expiry. Sharing uses a synchronous lock and stable nonce. A definite rejection can be retried; an ambiguous outcome disables further posting for that report. Segment pages are generated once per navigation action and never for summary views.
 
-Input attachments are fetched only from Discord attachment hosts, without redirects, with strict UTF-8 decoding and streaming size enforcement. The bot does not fetch Reddit URLs. Pasted text goes to the detector, and reports go to Discord. Ephemeral visibility does not prevent either service from receiving the text or determine their retention policies.
+Input attachments are fetched only from Discord attachment hosts, without redirects, with strict UTF-8 decoding and streaming size enforcement. The bot does not fetch source-post URLs. Pasted text goes to the detector, and reports go to Discord. Ephemeral visibility does not prevent either service from receiving the text or determine their retention policies.
 
 Reports expire at the earlier of ten minutes after completion or fourteen minutes after the analysis interaction began. Expiry/restart removes bot-side state, not messages or attachments already delivered. Shutdown drains active handlers before aborting remaining local provider requests. No task recovery or automatic resubmission occurs after restart.
 
 Only fixed operational messages and safe outcome codes are logged. SDK errors, tokens, raw provider responses, pasted text, and interaction payloads are never logged. The private error boundary exposes only deliberately user-facing errors; unexpected failures use a generic private message. There is no command telemetry.
+
+The client subscribes only to Guilds events. Message caching is disabled; user and per-guild member caches are capped at 200 and preserve the bot's own entries. Guild, channel, role, and permission caches retain SDK defaults. The SDK owns reconnects and Discord rate-limit handling; the service's scan cooldown and concurrency limit control provider submissions independently. The local heartbeat requires both Gateway readiness and availability of the configured guild.
 
 ## Verification and upkeep
 
@@ -45,6 +49,6 @@ All tests preload a network blocker for fetch, HTTP(S), sockets, TLS, and WebSoc
 
 The final container smoke test runs non-root, read-only, without credentials or networking. It loads the compiled modules, checks production-only dependencies, native fonts and chart rendering, and heartbeat behavior. CI installs dependencies with the lockfile and audits production packages. GitHub Actions use full commit pins; Dependabot proposes npm, Docker, and Actions updates. Keep `.node-version`, `package.json`'s engine range, and both Docker base stages aligned when updating Node.
 
-Release images are published only after verification. No CI or publishing job uses Discord/Pangram credentials, starts the bot, registers commands, or deploys a host.
+CI and publishing use one composite verification action. Publishing tags and pushes the exact image that passed verification in that job, with no second build. No CI or publishing job uses Discord/Pangram credentials, starts the bot, registers commands, or deploys a host.
 
-References: [Node release policy](https://github.com/nodejs/Release), [discord.js stable releases](https://github.com/discordjs/discord.js/releases), and the pinned dependency source/type definitions used by the tests.
+References: [Discord guidance review](discord-review.md), [Node release policy](https://github.com/nodejs/Release), [discord.js stable releases](https://github.com/discordjs/discord.js/releases), and the pinned dependency source/type definitions used by the tests.

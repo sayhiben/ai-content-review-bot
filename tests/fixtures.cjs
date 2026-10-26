@@ -15,4 +15,6 @@ const result = (source = text) => ({
 });
 const context = { userId: 'requester', guildId: 'guild', channelId: 'chat' };
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
-module.exports = { text, pangram, result, context, json };
+const access = { guildId: 'guild', channelId: 'chat', roleId: 'reviewer', allowThreads: true };
+const config = () => ({ token: 'TEST_ONLY', access: { ...access }, detection: { enabled: true, provider: 'pangram', apiKey: 'TEST_ONLY', model: 'pangram-4', usdPer100Words: .05 } });
+module.exports = { text, pangram, result, context, json, access, config };

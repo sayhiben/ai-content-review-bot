@@ -1,0 +1,32 @@
+name: Verify application and production image
+description: Run offline application tests and smoke-test the image that can be published.
+outputs:
+  image:
+    description: Local Docker image that passed verification
+    value: ai-review-verified
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: .node-version
+        cache: npm
+    - run: npm ci --no-fund
+      shell: bash
+    - run: npm run check
+      shell: bash
+    - run: npm run audit:production
+      shell: bash
+    - name: Preview commands without credentials or network access
+      run: node --require ./tests/offline.cjs dist/registerCommands.js
+      shell: bash
+    - name: Build production image
+      run: docker build --build-arg REVISION="$GITHUB_SHA" -t ai-review-verified .
+      shell: bash
+    - name: Verify final image without network access or credentials
+      run: >-
+        docker run --rm --network none --read-only --tmpfs /tmp:rw,size=32m,mode=1777
+        --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node
+        -v "$GITHUB_WORKSPACE/tests/container-smoke.cjs:/app/container-smoke.cjs:ro"
+        ai-review-verified /app/container-smoke.cjs
+      shell: bash

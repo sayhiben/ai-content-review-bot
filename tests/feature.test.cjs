@@ -2,8 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { MessageFlags } = require('discord.js');
 const { createAiCheckFeature } = require('../dist/aiDetection/createAiCheckFeature');
-const { text, result } = require('./fixtures.cjs');
-const config = () => ({ token: 'TEST_ONLY', channelId: 'chat', roleId: 'mod', apiKey: 'TEST_ONLY', detection: { enabled: true, guildId: 'guild', provider: 'pangram', model: 'pangram-4', usdPer100Words: .05 } });
+const { text, result, config } = require('./fixtures.cjs');
 
 test('feature and runtime imports never start the bot or register commands', () => {
   require('../dist/main'); require('../dist/registerCommands');

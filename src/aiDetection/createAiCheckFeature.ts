@@ -14,7 +14,7 @@ export function acceptsInteraction(interaction: Interaction): boolean {
 
 /** Pure composition; constructing a feature never logs in or contacts a provider. */
 export function createAiCheckFeature(
-  config: BotConfig,
+  config: Pick<BotConfig, "access" | "detection">,
   dependencies: { provider?: AiDetectionProvider; fetcher?: Fetch; log?: (outcome: string) => void } = {},
 ) {
   let service: AiCheckService | undefined;
@@ -25,11 +25,9 @@ export function createAiCheckFeature(
       try {
         if (!config.detection.enabled) throw new AiCheckError("disabled", "AI detection is disabled. Contact a bot administrator.");
         if (!handlers) {
-          const provider = dependencies.provider ?? new PangramProvider(config.apiKey!, config.detection.model, config.detection.usdPer100Words, dependencies.fetcher);
+          const provider = dependencies.provider ?? new PangramProvider(config.detection.apiKey!, config.detection.model, config.detection.usdPer100Words, dependencies.fetcher);
           service = new AiCheckService(provider, Date.now, dependencies.log);
-          handlers = new AiCheckInteractions(service, {
-            guildId: config.detection.guildId, channelId: config.channelId, roleId: config.roleId,
-          }, dependencies.fetcher);
+          handlers = new AiCheckInteractions(service, config.access, dependencies.fetcher);
         }
         if (interaction.isChatInputCommand()) await handlers.execute(interaction);
         else await handlers.handle(interaction);

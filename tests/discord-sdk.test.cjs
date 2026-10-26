@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { Client, ThreadMemberManager, InteractionWebhook, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
 const { AiCheckService } = require('../dist/aiDetection/AiCheckService');
 const { AiCheckInteractions } = require('../dist/aiDetection/interactions');
-const { result, text, context } = require('./fixtures.cjs');
+const { result, text, context, access } = require('./fixtures.cjs');
 
 test('real SDK thread cache cannot authorize a removed private-thread member', async t => {
   const client = new Client({ intents: [] });
@@ -19,7 +19,7 @@ test('real SDK thread cache cannot authorize a removed private-thread member', a
   channel.members.cache.set(member.id, { id: member.id });
   const service = new AiCheckService({ name: 'Fixture', minimumWords: 50, analyze: async () => assert.fail('must not scan') });
   t.after(() => service.dispose());
-  const handlers = new AiCheckInteractions(service, { guildId: 'guild', channelId: 'chat', roleId: 'mod' });
+  const handlers = new AiCheckInteractions(service, access);
   await assert.rejects(handlers.execute({
     id: 'input', user: member, member, guildId: 'guild', channelId: channel.id, channel,
     guild: { members: { fetch: async () => member }, channels: { fetch: async () => channel } },
@@ -55,7 +55,7 @@ test('SDK webhook serialization preserves report attachments through private nav
   t.after(() => service.dispose());
   const session = service.create(context, 'scan');
   await service.analyze(session, async () => text, Date.now());
-  const handlers = new AiCheckInteractions(service, { guildId: 'guild', channelId: 'chat', roleId: 'mod' });
+  const handlers = new AiCheckInteractions(service, access);
   await handlers.deliver({
     user: { id: 'requester' }, guildId: 'guild', channelId: 'chat',
     editReply: payload => webhook.editMessage('@original', payload),

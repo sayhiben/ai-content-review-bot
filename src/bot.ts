@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits, Interaction, MessageFlags } from "discord.js";
+import { Client, Events, GatewayIntentBits, Interaction, MessageFlags, Options } from "discord.js";
 import { acceptsInteraction, createAiCheckFeature } from "./aiDetection/createAiCheckFeature";
 import { BotConfig } from "./config";
 import { clearHealth, writeHealth } from "./health";
@@ -16,13 +16,22 @@ export function createBot(config: BotConfig, options: {
   drainMs?: number;
 } = {}) {
   const log = options.log ?? console.log;
-  const client = options.client ?? new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: [] } });
-  const feature = options.feature ?? createAiCheckFeature(config, { log: outcome => log(`Analysis outcome: ${outcome}`) });
+  const client = options.client ?? new Client({
+    intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: [] },
+    makeCache: Options.cacheWithLimits({
+      ...Options.DefaultMakeCacheSettings,
+      MessageManager: 0,
+      GuildMemberManager: { maxSize: 200, keepOverLimit: member => member.id === member.client.user?.id },
+      UserManager: { maxSize: 200, keepOverLimit: user => user.id === user.client.user?.id },
+    }),
+  });
+  const feature = options.feature ?? createAiCheckFeature({ access: config.access, detection: config.detection }, { log: outcome => log(`Analysis outcome: ${outcome}`) });
   const active = new Set<Promise<void>>();
   let draining = false;
   let shutdown: Promise<void> | undefined;
+  const ready = () => client.isReady() && !!client.guilds.cache.get(config.access.guildId)?.available && !draining;
   const heartbeat = () => {
-    try { (options.health ?? writeHealth)(client.isReady() && !draining); }
+    try { (options.health ?? writeHealth)(ready()); }
     catch { log("Health status could not be written."); }
   };
   const timer = setInterval(heartbeat, 15_000);
@@ -42,7 +51,7 @@ export function createBot(config: BotConfig, options: {
     active.add(task);
     void task.finally(() => active.delete(task));
   };
-  const onReady = () => { heartbeat(); log("AI Content Review Bot is ready."); };
+  const onReady = () => { heartbeat(); log(ready() ? "AI Content Review Bot is ready." : "Connected to Discord; the configured server is unavailable."); };
   const onError = () => log("Discord client reported an error.");
   client.on(Events.InteractionCreate, onInteraction);
   client.on(Events.ClientReady, onReady);
