@@ -1,3 +1,5 @@
+import { UserFacingError } from "../utils/UserFacingError";
+
 export type SegmentCategory = "ai" | "assisted" | "human" | "unknown";
 
 export interface DetectionSegment {
@@ -33,6 +35,8 @@ export interface DetectionResult {
 
 export interface AiDetectionProvider {
   readonly name: string;
+  readonly model: string;
+  readonly version: string;
   readonly minimumWords: number;
   readonly maximumCharacters?: number;
   analyze(text: string, options: { signal: AbortSignal }): Promise<DetectionResult>;
@@ -40,11 +44,15 @@ export interface AiDetectionProvider {
 
 export interface AiDetectionConfig {
   enabled: boolean;
-  pangram: { enabled: boolean; apiKey?: string; model: string; usdPer100Words: number };
-  gptzero: { enabled: boolean; apiKey?: string; modelVersion?: string; usdPer1000Words?: number };
+  cachePath: string;
+  pangram: { enabled: boolean; apiKey?: string; model: string; version: string; usdPer100Words: number };
+  gptzero: { enabled: boolean; apiKey?: string; modelVersion: string; usdPer1000Words?: number };
 }
 
 export { UserFacingError as AiCheckError } from "../utils/UserFacingError";
+
+/** The provider rejected the initial submission before creating a paid analysis. */
+export class ScanRejected extends UserFacingError {}
 
 export const LIMITS = {
   bytes: 256 * 1024,

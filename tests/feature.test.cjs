@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { MessageFlags } = require('discord.js');
 const { createAiCheckFeature } = require('../dist/aiDetection/createAiCheckFeature');
-const { text, result, config } = require('./fixtures.cjs');
+const { text, result, config, provider } = require('./fixtures.cjs');
 
 test('feature and runtime imports never start the bot or register commands', () => {
   require('../dist/main'); require('../dist/registerCommands');
@@ -25,7 +25,7 @@ test('disabled feature responds privately without constructing or calling a prov
 test('one feature boundary handles command, modal, and component errors privately', async t => {
   let scans = 0, modal;
   const edits = [], replies = [];
-  const feature = createAiCheckFeature(config(), { providers: { fixture: { name: 'Fixture', minimumWords: 50, analyze: async input => { scans++; return result(input); } } } });
+  const feature = createAiCheckFeature(config(), { providers: { fixture: provider({ analyze: async input => { scans++; return result(input); } }) } });
   t.after(() => feature.dispose());
   const channel = { id: 'chat', isThread: () => false, permissionsFor: () => ({ has: () => true }) };
   const member = { id: 'requester', roles: { cache: new Map() } };

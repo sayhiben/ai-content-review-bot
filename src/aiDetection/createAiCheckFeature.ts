@@ -1,4 +1,4 @@
-import type { Interaction } from "discord.js";
+import type { Interaction, ChatInputCommandInteraction, ButtonInteraction, ModalSubmitInteraction } from "discord.js";
 import { BotConfig } from "../config";
 import { respondPrivateError } from "../discord/privateErrors";
 import { AiCheckService } from "./AiCheckService";
@@ -7,8 +7,9 @@ import { PangramProvider } from "./PangramProvider";
 import { GPTZeroProvider } from "./GPTZeroProvider";
 import { AiCheckError, AiDetectionProvider, Fetch } from "./types";
 import { COMMAND_NAME } from "../discord/command";
+import { DetectionCache } from "./DetectionCache";
 
-export function acceptsInteraction(interaction: Interaction): boolean {
+export function acceptsInteraction(interaction: Interaction): interaction is ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction {
   return (interaction.isChatInputCommand() && interaction.commandName === COMMAND_NAME) ||
     ((interaction.isButton() || interaction.isModalSubmit()) && interaction.customId.startsWith(`${COMMAND_NAME}:`));
 }
@@ -28,16 +29,16 @@ export function createAiCheckFeature(
         if (!handlers) {
           const { pangram, gptzero } = config.detection;
           const providers = dependencies.providers ?? {
-            ...(pangram.enabled && pangram.apiKey ? { pangram: new PangramProvider(pangram.apiKey, pangram.model, pangram.usdPer100Words, dependencies.fetcher) } : {}),
+            ...(pangram.enabled && pangram.apiKey ? { pangram: new PangramProvider(pangram.apiKey, pangram.model, pangram.version, pangram.usdPer100Words, dependencies.fetcher) } : {}),
             ...(gptzero.enabled && gptzero.apiKey ? { gptzero: new GPTZeroProvider(gptzero.apiKey, gptzero.modelVersion, gptzero.usdPer1000Words, dependencies.fetcher) } : {}),
           };
-          service = new AiCheckService(providers, Date.now, dependencies.log);
+          service = new AiCheckService(providers, Date.now, dependencies.log, new DetectionCache(config.detection.cachePath));
           handlers = new AiCheckInteractions(service, config.access, dependencies.fetcher);
         }
         if (interaction.isChatInputCommand()) await handlers.execute(interaction);
         else await handlers.handle(interaction);
       } catch (error) {
-        if (interaction.isChatInputCommand() || interaction.isButton() || interaction.isModalSubmit()) await respondPrivateError(interaction, error);
+        await respondPrivateError(interaction, error);
       }
     },
     dispose() { service?.dispose(); },

@@ -21,5 +21,8 @@ test('explicit registration upserts one command in the configured guild instead 
   assert.equal(requests[0][0], '/applications/12345678901234567/guilds/12345678901234568/commands');
   assert.equal(requests[0][1].body.name, 'ai-check');
   assert.equal(Array.isArray(requests[0][1].body), false);
-  await assert.rejects(registerCommands(['--typo'], env, { post: async () => assert.fail('must not write') }), /Usage/);
+});
+
+test('registration rejects unknown flags before writing', async () => {
+  await assert.rejects(registerCommands(['--typo'], {}, { post: async () => assert.fail('must not write') }), /Usage/);
 });

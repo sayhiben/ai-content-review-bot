@@ -1,74 +1,46 @@
 # AI Content Review Bot
 
-A standalone Discord bot for reviewing pasted posts, comments, and other text with an AI detector. It has its own application, credentials, deployment, and repository.
+A Discord bot that checks pasted posts, comments, and text files with Pangram or GPTZero.
 
-`/ai-check` returns a **private report** with the chosen detector's results, a segment chart when positions are verified, paginated excerpts, and a complete text attachment. The requester can explicitly post the same report to the original channel without another paid scan.
+`/ai-check` returns a private summary, segment chart, and full text report. **Post to channel** shares the report and its text in the original channel. Reports support human review; the bot does not take moderation actions.
 
-Access is allowed in `ALLOWED_CHANNEL_ID` **or** for members with `ALLOWED_ROLE_ID`, within `DISCORD_GUILD_ID`. `ALLOW_CHANNEL_THREADS` controls whether the channel's direct child threads also qualify (default `true`). DMs and other servers are rejected. Access messages use the configured IDs; community names are never hardcoded.
+## Usage
 
-Pangram and GPTZero are independently configurable backends behind the same provider interface. With one enabled backend and a configured key, selection is automatic. With both available, the input modal asks which provider to use, including for file attachments. Only the selected provider receives the text; errors never trigger a scan with another provider.
+- Paste up to 4,000 characters, or attach a UTF-8 `.txt` file. Submissions must contain 50–5,000 words and fit within 256 KiB; GPTZero also limits text to 150,000 characters.
+- Choose a provider when both are configured. A single available provider is selected automatically.
+- Pangram reports percentages of classified text. GPTZero reports document probabilities and sentence highlights; probabilities are not percentages of text.
+- Reports include estimated scan cost and an observed balance when available. Pangram balance is unavailable. GPTZero reports remaining words with the observation time.
+- Identical normalized text uses the saved result for that provider, model, and configured version. Cached reports incur no new scan charge. Saved results survive restarts.
+- Report controls last up to ten minutes. Submit the same text again to retrieve a saved result. If delivery fails while controls are active, run `/ai-check` without a file to recover it.
 
-Pangram reports fractions of classified text. GPTZero reports document-class probabilities and sentence highlights; those probabilities are explicitly distinguished from percentages of text. Reports support human review and never take moderation actions.
+Access requires the configured channel **or** role, within the configured server. Direct child threads can inherit channel access. Only the requester can use report controls; access is checked again before reading or sharing a report.
 
-## Status
+## Setup
 
-Scanning defaults to **disabled**. Development and tests use synthetic responses and block application-service connections. Real Discord/provider acceptance, application creation, credentials, and activation are a later step.
-
-Scan costs are estimates. Pangram's remaining credits remain **unavailable** under the approved initial scope; its configured $0.05 per 100-word block must be verified before enabling. GPTZero retrieves a remaining-word snapshot after successful scans; failed or null quota lookups stay unavailable. GPTZero's optional cost estimate uses your configured per-1,000-word rate, with no assumed price.
-
-## Build and test offline
-
-Use Node **26.12.1** (see `.node-version`) and npm. Only discord.js and canvas are runtime dependencies. Dependencies and GitHub Actions are locked; the Docker image includes the native libraries and fonts canvas needs.
+Use the Node version in [.node-version](.node-version).
 
 ```sh
 npm ci
 npm run check
-npm run audit:production
 npm run commands
 ```
 
-`npm run commands` prints the command definition without credentials or network calls. It does not register anything. Tests preload a network blocker and use injected provider/Discord transports, including the real SDK's serialization and cache behavior. Importing runtime modules never starts the bot.
+Tests block network connections and use synthetic data. `npm run check` requires **100% line, branch, and function coverage** across the application, including CLI entrypoints. The LCOV report is written to `coverage/lcov.info` and saved by CI. Command preview requires no credentials.
 
-To validate the production image without starting the bot:
+Copy [.env.example](.env.example) to `.env`, then follow [deployment](docs/deployment.md) to configure the Discord application, providers, model versions, and persistent storage. Scanning defaults to disabled. Community-specific IDs belong in configuration; see the optional [Seattle example](examples/seattle.env.example).
 
-```sh
-docker build -t ai-content-review-bot:test .
-docker run --rm --network none --read-only --tmpfs /tmp:rw,size=32m,mode=1777 \
-  --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node \
-  -v "$PWD/tests/container-smoke.cjs:/app/container-smoke.cjs:ro" \
-  ai-content-review-bot:test /app/container-smoke.cjs
-```
+`npm start` connects to Discord. `npm run commands -- --apply` registers the guild command. CI does neither.
 
-The Docker commands above use POSIX shell syntax. Builds can download packages; tests and runtime smoke checks do not connect to Discord or either detector. CI runs the same checks, audits production dependencies, and validates the final non-root image with networking disabled.
+## Storage and privacy
 
-## Configure and deploy later
+The local SQLite database retains report text, segment details, and scan-time budget information until an administrator removes it. Hashing identifies duplicate submissions; it does **not** anonymize stored reports. Protect the database and its backups as submitted content. Discord and the selected provider also receive the text under their own retention policies.
 
-Follow [deployment and live acceptance](docs/deployment.md). In brief:
+Run one instance with a persistent cache volume. One scan per user, two concurrent scans, and a 60-second submission cooldown limit requests. Use provider-side spending controls for an account budget cap. An unconfirmed paid scan stays blocked from resubmission until an administrator investigates.
 
-1. Create a dedicated Discord application/bot and install it in the intended server.
-2. Copy `.env.example` to an untracked `.env` and fill in the application, guild, channel, role, and token values. Keep scanning disabled until live acceptance passes.
-3. Register the guild command explicitly with `npm run commands -- --apply`.
-4. Deploy exactly one instance with Docker Compose or the published container image.
+## Deployment and maintenance
 
-Community-specific mappings belong in configuration; [the optional Seattle example](examples/seattle.env.example) demonstrates one. The deployment guide includes the [environment migration](docs/deployment.md#environment) from the original variable names.
+CI checks types, tests and coverage, production dependencies, and a container smoke test with networking disabled. The smoke test verifies non-root execution, native chart rendering, cache persistence, and health checks.
 
-`npm start` connects to Discord. `npm run commands -- --apply` writes to Discord. Neither belongs in offline tests or CI. The runtime never automatically registers or deletes commands.
+The **Publish container** workflow runs on `v*` tags or manual dispatch and publishes the tested image to `ghcr.io/sayhiben/ai-content-review-bot`. Deploy by digest and retain a verified image and matching configuration for rollback.
 
-## Command behavior and limits
-
-- `/ai-check` opens a 4,000-character text modal that names the receiving provider. Longer text can use `file:` with a UTF-8 `.txt` attachment.
-- When both providers are available, choose one in the modal before submitting. For attachments, the modal contains only the provider choice; no file is downloaded or scanned until submission.
-- Both adapters use a 50–5,000-word bot policy, within 256 KiB; GPTZero additionally caps input at 150,000 UTF-16 code units. Input is rejected rather than silently truncated or split into paid scans.
-- Current permissions and private-thread membership are rechecked. Only the requester can navigate or share a report, in the original channel.
-- One scan per user, two simultaneous scans per process, and a 60-second submission cooldown, shared across providers. Invalid input does not consume a submission. These are not account-wide spending limits.
-- Failed report delivery can be recovered by running `/ai-check` without a file in the original channel before expiry. Recovery does not submit another scan.
-- Report controls expire within ten minutes after completion, before the Discord interaction token expires. Restarts lose in-memory reports. Up to 100 sessions are retained; older inactive sessions may be evicted.
-- A provider submission is never automatically retried. If its outcome is uncertain, a charge may still occur. Public sharing uses a lock and nonce; uncertain posting disables further attempts to avoid duplicates.
-
-See [architecture, privacy, and provider contracts](docs/architecture.md) and the [Discord best-practices review](docs/discord-review.md) for implementation decisions and current limitations.
-
-## Releases
-
-Every push to `main` and every pull request runs CI. A `v*` tag or manual **Publish container** workflow runs the same verification and publishes the exact image that passed its smoke test to `ghcr.io/sayhiben/ai-content-review-bot`, including a `sha-<full-commit>` tag. Publishing an image does not deploy or activate the bot. Deploy a verified digest and retain the previous digest for rollback.
-
-The initial release is extracted from the AI-detection work proposed in [SeaBot PR #274](https://github.com/reddit-seattle/seabot/pull/274). Relevant code is preserved under the MIT license, with the original notice retained in [LICENSE](LICENSE).
+See [deployment](docs/deployment.md), [design decisions](docs/architecture.md), and [LICENSE](LICENSE).

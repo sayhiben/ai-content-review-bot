@@ -93,3 +93,43 @@ test('real SDK caches bound users and members, retain the bot, and do not retain
   messages.cache.set('message', { id: 'message' });
   assert.equal(messages.cache.size, 0);
 });
+
+test('unrelated commands do not reach the feature', async () => {
+  const client = fakeClient();
+  const bot = createBot(config(), { client, health: () => {}, clearHealth: () => {}, log: () => {},
+    feature: { handleInteraction: async () => assert.fail('must ignore'), dispose: () => {} },
+  });
+  client.emit(Events.InteractionCreate, { ...interaction(), commandName: 'unrelated', isButton: () => false, isModalSubmit: () => false });
+  await bot.stop();
+});
+
+for (const [option, message] of [['health', /could not be written/], ['clearHealth', /could not be cleared/]]) {
+  test(`${option} failure does not prevent shutdown`, async t => {
+    const log = t.mock.fn();
+    const bot = createBot(config(), { client: fakeClient(), log, health: () => {}, clearHealth: () => {}, [option]: () => { throw new Error('SECRET'); } });
+    await bot.stop();
+    assert.ok(log.mock.calls.some(call => message.test(call.arguments[0])));
+    assert.ok(log.mock.calls.every(call => !call.arguments[0].includes('SECRET')));
+  });
+}
+
+test('default lifecycle dependencies write and clear a heartbeat', async t => {
+  const health = require('../dist/health');
+  const write = t.mock.method(health, 'writeHealth', () => {}), clear = t.mock.method(health, 'clearHealth', () => {});
+  t.mock.method(console, 'log', () => {});
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const bot = createBot(config(), { client: fakeClient() });
+  t.mock.timers.tick(15_000);
+  assert.ok(write.mock.callCount() >= 2);
+  await bot.stop(); assert.equal(clear.mock.callCount(), 1);
+});
+
+test('feature outcomes are logged through the lifecycle logger', async t => {
+  t.mock.method(require('../dist/aiDetection/createAiCheckFeature'), 'createAiCheckFeature', (_config, dependencies) => ({
+    handleInteraction: async () => dependencies.log('success'), dispose: () => {},
+  }));
+  const log = t.mock.fn(), client = fakeClient();
+  const bot = createBot(config(), { client, log, health: () => {}, clearHealth: () => {} });
+  client.emit(Events.InteractionCreate, interaction()); await bot.stop();
+  assert.ok(log.mock.calls.some(call => call.arguments[0] === 'Analysis outcome: success'));
+});

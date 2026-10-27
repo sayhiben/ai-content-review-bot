@@ -41,7 +41,7 @@ export function createBot(config: BotConfig, options: {
   async function dispatch(interaction: Interaction): Promise<void> {
     if (!acceptsInteraction(interaction)) return;
     if (draining) {
-      if (interaction.isRepliable()) await interaction.reply({ content: "The bot is restarting. Please try again shortly.", flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+      await interaction.reply({ content: "The bot is restarting. Please try again shortly.", flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
       return;
     }
     await feature.handleInteraction(interaction);
@@ -66,14 +66,14 @@ export function createBot(config: BotConfig, options: {
       draining = true;
       heartbeat();
       shutdown = (async () => {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
+        let timeout!: ReturnType<typeof setTimeout>;
         try {
           await Promise.race([
             Promise.allSettled([...active]),
             new Promise<void>(resolve => { timeout = setTimeout(resolve, options.drainMs ?? LIMITS.analysisMs + 15_000); }),
           ]);
         } finally {
-          if (timeout) clearTimeout(timeout);
+          clearTimeout(timeout);
           clearInterval(timer);
           feature.dispose();
           client.off(Events.InteractionCreate, onInteraction);

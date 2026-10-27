@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json LICENSE ./
+RUN mkdir -m 700 data && chown node:node data
 ARG REVISION=development
 LABEL org.opencontainers.image.title="AI Content Review Bot" \
       org.opencontainers.image.description="Private AI-content reports for Discord moderators" \

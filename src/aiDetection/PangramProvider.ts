@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { readLimited, wordCount } from "./input";
-import { AiCheckError, AiDetectionProvider, DetectionResult, DetectionSegment, Fetch, LIMITS } from "./types";
+import { AiCheckError, AiDetectionProvider, DetectionResult, DetectionSegment, Fetch, LIMITS, ScanRejected } from "./types";
 
 const BASE_URL = "https://text.external-api.pangram.com";
 const labels: Record<string, DetectionSegment["category"]> = {
@@ -30,8 +30,8 @@ export function normalizePangram(value: unknown, model: string): DetectionResult
       (unit === "codepoint" ? codePoints.slice(start, end).join("") : text.slice(start, end)) === w.text;
   });
   const codepointValid = verifies("codepoint"), utf16Valid = verifies("utf16");
-  // Until the provider's offset contract is confirmed, never pick between two
-  // matching interpretations that point to different occurrences of repeated text.
+  // Matching offset interpretations can identify different repeated passages.
+  // Omit ambiguous positions so the chart cannot highlight the wrong occurrence.
   const ambiguous = codepointValid && utf16Valid && windows.some(w =>
     utf16Offsets[w.start_index] !== w.start_index || utf16Offsets[w.end_index] !== w.end_index);
   const unit = ambiguous ? undefined : codepointValid ? "codepoint" : utf16Valid ? "utf16" : undefined;
@@ -58,7 +58,8 @@ export class PangramProvider implements AiDetectionProvider {
 
   constructor(
     private readonly apiKey: string,
-    private readonly model: string,
+    readonly model: string,
+    readonly version: string,
     private readonly usdPer100Words: number,
     private readonly fetcher: Fetch = globalThis.fetch,
     private readonly wait: (ms: number, signal: AbortSignal) => Promise<unknown> =
@@ -69,7 +70,7 @@ export class PangramProvider implements AiDetectionProvider {
     try {
       // No automatic POST retry: a lost response can still represent a billed task.
       const submitted = await this.request("/task", signal, { text, model: this.model, public_dashboard_link: false });
-      if (!submitted.response.ok) throw this.httpError(submitted.response.status);
+      if (!submitted.response.ok) throw this.httpError(submitted.response.status, true);
       if (typeof submitted.body.task_id !== "string" || !submitted.body.task_id) throw malformed();
       const taskPath = `/task/${encodeURIComponent(submitted.body.task_id)}`;
       let delay = 1_000;
@@ -131,7 +132,7 @@ export class PangramProvider implements AiDetectionProvider {
     return { response, body };
   }
 
-  private httpError(status: number): AiCheckError {
+  private httpError(status: number, submission = false): AiCheckError {
     const messages: Record<number, string> = {
       401: "Pangram credentials are unavailable or invalid. Contact a bot administrator.",
       402: "Pangram reports insufficient API credit. Check the shared API billing account.",
@@ -141,6 +142,7 @@ export class PangramProvider implements AiDetectionProvider {
       429: "Pangram is rate limited. Please try later.",
       503: "The configured Pangram model is unavailable. No replacement scan was submitted.",
     };
-    return new AiCheckError(`http_${status}`, messages[status] ?? "Pangram could not complete the request. A submitted scan may incur a charge; no replacement was submitted.");
+    const ErrorType = submission && [400, 401, 402, 403, 404, 413, 422, 429].includes(status) ? ScanRejected : AiCheckError;
+    return new ErrorType(`http_${status}`, messages[status] ?? "Pangram could not complete the request. A submitted scan may incur a charge; no replacement was submitted.");
   }
 }
