@@ -1,5 +1,5 @@
 import { readLimited, wordCount } from "./input";
-import { AiCheckError, AiDetectionProvider, DetectionResult, DetectionSegment, Fetch, LIMITS } from "./types";
+import { AiCheckError, AiDetectionProvider, DetectionResult, DetectionSegment, Fetch, LIMITS, ScanRejected } from "./types";
 
 const BASE_URL = "https://api.gptzero.me";
 const malformed = () => new AiCheckError("response", "GPTZero returned an invalid analysis. No replacement scan was submitted.");
@@ -7,7 +7,7 @@ const record = (value: unknown): value is Record<string, unknown> => !!value && 
 const probability = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 
 /** Preserve the vendor's probabilities and highlights without inventing text fractions. */
-export function normalizeGPTZero(value: unknown, submittedText: string, modelVersion?: string): DetectionResult {
+export function normalizeGPTZero(value: unknown, submittedText: string, modelVersion: string): DetectionResult {
   if (!record(value) || !Array.isArray(value.documents) || value.documents.length !== 1) throw malformed();
   const doc = value.documents[0];
   if (!record(doc) || !["ai", "mixed", "human"].includes(String(doc.predicted_class))) throw malformed();
@@ -43,7 +43,7 @@ export function normalizeGPTZero(value: unknown, submittedText: string, modelVer
   const classification = { ai: "Likely AI", mixed: "Likely mixed", human: "Likely human" }[doc.predicted_class as "ai" | "mixed" | "human"];
   const confidence = typeof doc.confidence_category === "string" ? doc.confidence_category : "unavailable";
   return {
-    provider: "GPTZero", model: modelVersion ?? "Latest available",
+    provider: "GPTZero", model: modelVersion,
     version: typeof doc.version === "string" ? doc.version : typeof value.version === "string" ? value.version : undefined,
     analyzedText, headline: confidence === "reject" ? "Uncertain classification" : `${classification} · ${confidence} confidence`,
     explanation: [
@@ -58,13 +58,14 @@ export function normalizeGPTZero(value: unknown, submittedText: string, modelVer
 
 export class GPTZeroProvider implements AiDetectionProvider {
   readonly name = "GPTZero";
+  readonly model = "ai-detection";
   // Bot policy for useful moderation reports; not a claim about the API minimum.
   readonly minimumWords = 50;
   readonly maximumCharacters = 150_000;
 
   constructor(
     private readonly apiKey: string,
-    private readonly modelVersion?: string,
+    readonly version: string,
     private readonly usdPer1000Words?: number,
     private readonly fetcher: Fetch = globalThis.fetch,
   ) {}
@@ -74,9 +75,9 @@ export class GPTZeroProvider implements AiDetectionProvider {
     try {
       // Never retry a potentially billed submission, including 429/5xx responses.
       const body = await this.request("/v2/predict/text", signal, {
-        document: text, ...(this.modelVersion ? { modelVersion: this.modelVersion } : {}),
+        document: text, modelVersion: this.version,
       });
-      result = normalizeGPTZero(body, text, this.modelVersion);
+      result = normalizeGPTZero(body, text, this.version);
     } catch (error) {
       if (error instanceof AiCheckError) throw error;
       throw new AiCheckError("connection", "The GPTZero scan could not be confirmed and may incur a charge. No replacement scan was submitted.");
@@ -106,7 +107,8 @@ export class GPTZeroProvider implements AiDetectionProvider {
       const reason = response.status === 401 || response.status === 403 ? "Check the API credentials and plan." :
         response.status === 429 ? "The provider's rate or word quota was reached." :
         response.status === 400 ? "The text or configured model was rejected." : "The provider could not complete the request.";
-      throw new AiCheckError(`http_${response.status}`, `GPTZero: ${reason} No replacement scan was submitted; a submitted scan may incur a charge.`);
+      const ErrorType = payload && [400, 401, 403, 429].includes(response.status) ? ScanRejected : AiCheckError;
+      throw new ErrorType(`http_${response.status}`, `GPTZero: ${reason}`);
     }
     const bytes = await readLimited(response, payload ? 4 * 1024 * 1024 : 64 * 1024);
     try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }

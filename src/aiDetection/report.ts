@@ -11,46 +11,44 @@ const escape = (text: string) => text.replace(/[\\`*_{}[\]()<>#+.!|~]/g, "\\$&")
 const clip = (text: string, length: number) => text.length <= length ? text : text.slice(0, length - 1) + "…";
 const percent = (n: number | undefined) => n === undefined ? "Unavailable" : n > 0 && n < 0.001 ? "<0.1%" : `${(n * 100).toFixed(1)}%`;
 
-export function budgetText(result: DetectionResult): string {
+export function budgetText(result: DetectionResult, cached = false): string {
   const usage = result.usage;
   const cost = usage?.cost;
   const balance = result.balance;
   const costText = cost ? `${cost.amount > 0 && cost.amount < 0.01 ? "<0.01" : cost.amount.toFixed(2)} ${cost.currency}` : "cost unavailable";
   return [
-    usage ? `${usage.estimated ? "Estimated" : "Reported"} usage: ${usage.units} ${usage.unit} · ${costText}` : "Scan usage/cost: unavailable",
-    balance ? `Remaining API balance: ${balance.amount} ${balance.unit} (observed ${new Date(balance.observedAt).toISOString()})` : `Remaining ${result.provider} API balance: unavailable`,
+    cached ? "Cached result · no new scan charge" : usage ? `${usage.estimated ? "Estimated" : "Reported"}: ${usage.units} ${usage.unit} · ${costText}` : "Scan cost unavailable",
+    balance ? `Balance: ${balance.amount} ${balance.unit} as of ${new Date(balance.observedAt).toISOString()}` : "Remaining balance unavailable",
   ].join("\n");
 }
 
-function documentProbabilityText(result: DetectionResult): string | undefined {
-  const p = result.documentProbabilities;
-  return p ? `AI-only: ${percent(p.ai)}; Mixed: ${percent(p.mixed)}; Human-only: ${percent(p.human)}\nThese are document-class probabilities, not percentages of text.` : undefined;
+function documentProbabilityText(p: NonNullable<DetectionResult["documentProbabilities"]>): string {
+  return `AI: ${percent(p.ai)} · Mixed: ${percent(p.mixed)} · Human: ${percent(p.human)}\nProbabilities, not text percentages.`;
 }
 
-export function summaryEmbed(session: ReportSession, publicReport = false) {
+export function summaryEmbed(session: ReportSession) {
   const r = session.result!;
   return {
     title: clip(escape(`${r.provider}: ${r.headline}`), 240),
-    description: clip(escape(r.explanation), 2_000),
+    description: clip(escape(`${wordCount(r.analyzedText)} words · ${r.model}${r.version ? ` · ${r.version}` : ""}`), 1_000),
     color: 0x00796b,
     fields: [
-      { name: "Text classified as", value: !r.textFractions && r.documentProbabilities ? "Text percentages: unavailable from this provider." : `AI-generated: **${percent(r.textFractions?.ai)}**\nAI-assisted: **${percent(r.textFractions?.assisted)}**\nHuman: **${percent(r.textFractions?.human)}**` },
-      ...(r.documentProbabilities ? [{ name: "Document classification probabilities", value: documentProbabilityText(r)! }] : []),
-      { name: "Analysis", value: clip(escape(`${r.provider} · ${r.model}${r.version ? ` · version ${r.version}` : ""}\n${wordCount(r.analyzedText)} words in analyzed text${r.analyzedText !== session.submittedText ? " · provider normalized the input" : ""}`), 1_000) },
-      { name: "Shared API budget", value: clip(escape(budgetText(r)), 1_000) },
-      ...(!r.segments.length ? [{ name: "Segments", value: "The provider did not return segment details." }] :
-        r.segments.some(s => !s.range) ? [{ name: "Segments", value: "Segment positions could not be verified, so the chart is unavailable. Segment text and labels are in the complete report." }] :
-        session.hasChart === false ? [{ name: "Segments", value: "The chart could not be rendered. Segment text, positions, and labels are in the complete report." }] : []),
+      ...(r.textFractions ? [{ name: "Text classified as", value: `AI: **${percent(r.textFractions.ai)}** · Assisted: **${percent(r.textFractions.assisted)}** · Human: **${percent(r.textFractions.human)}**` }] : []),
+      ...(r.documentProbabilities ? [{ name: "Document probabilities", value: documentProbabilityText(r.documentProbabilities) }] : []),
+      ...(!r.textFractions && !r.documentProbabilities ? [{ name: "Score", value: "Unavailable" }] : []),
+      { name: "API budget", value: clip(escape(budgetText(r, session.cached)), 1_000) },
+      ...(!r.segments.length ? [{ name: "Segments", value: "No segment details returned." }] :
+        r.segments.some(s => !s.range) || session.hasChart === false ? [{ name: "Segments", value: "Chart unavailable. See the attached text report." }] : []),
     ],
-    timestamp: new Date(session.completedAt!).toISOString(),
-    footer: { text: `Detection is an estimate for human review. Report ${session.id}${publicReport ? "" : ` · Controls expire ${new Date(session.expiresAt).toISOString()}`}` },
+    timestamp: new Date(session.scannedAt!).toISOString(),
+    footer: { text: "AI detection is an estimate. Review the text before acting." },
   };
 }
 
 export function segmentPages(result: DetectionResult): string[] {
   const pages: string[] = [];
   result.segments.forEach((segment, index) => {
-    const heading = `**Segment ${index + 1}/${result.segments.length}: ${escape(CATEGORY_NAMES[segment.category])}**\n${clip(escape(segment.label), 200)}${segment.confidence ? ` · Confidence: ${clip(escape(segment.confidence), 100)}` : ""}`;
+    const heading = `**${index + 1}/${result.segments.length} · ${clip(escape(segment.label), 200)}**${segment.confidence ? ` · Confidence: ${clip(escape(segment.confidence), 100)}` : ""}`;
     // Escape BEFORE sizing; escaping may double a payload's length. Iterate by code point.
     let page = "";
     const parts: string[] = [];
@@ -62,22 +60,22 @@ export function segmentPages(result: DetectionResult): string[] {
     parts.push(page || "(Empty segment)");
     parts.forEach((part, p) => pages.push(`${heading}${parts.length > 1 ? ` · Part ${p + 1}/${parts.length}` : ""}\n\n${part}`));
   });
-  return pages.length ? pages : ["This provider did not return segment details."];
+  return pages.length ? pages : ["No segment details returned."];
 }
 
 export function fullReport(session: ReportSession): Buffer {
   const r = session.result!;
   const parts = [
-    `AI detection report ${session.id}`, `${r.provider} / ${r.model} / ${r.version ?? "version unavailable"}`,
-    new Date(session.completedAt!).toISOString(), r.headline, r.explanation,
-    `AI-generated: ${percent(r.textFractions?.ai)}; AI-assisted: ${percent(r.textFractions?.assisted)}; Human: ${percent(r.textFractions?.human)}`,
-    ...(r.documentProbabilities ? [documentProbabilityText(r)!] : []),
-    budgetText(r), "Detection is an estimate for human review.", "", "SUBMITTED TEXT", session.submittedText!,
+    `${r.provider} · ${r.model}${r.version ? ` · ${r.version}` : ""}`,
+    new Date(session.scannedAt!).toISOString(), r.headline, r.explanation,
+    ...(r.textFractions ? [`AI: ${percent(r.textFractions.ai)}; Assisted: ${percent(r.textFractions.assisted)}; Human: ${percent(r.textFractions.human)}`] : []),
+    ...(r.documentProbabilities ? [documentProbabilityText(r.documentProbabilities)] : []),
+    budgetText(r, session.cached), "AI detection is an estimate.", "", "SUBMITTED TEXT", session.submittedText!,
   ];
-  if (r.analyzedText !== session.submittedText) parts.push("", "ANALYZED TEXT (normalized by provider)", r.analyzedText);
-  parts.push("", "SEGMENTS (positions refer to analyzed text; overlaps/gaps are preserved)");
+  if (r.analyzedText !== session.submittedText) parts.push("", "ANALYZED TEXT", r.analyzedText);
+  parts.push("", "SEGMENTS");
   for (const [index, s] of r.segments.entries()) {
-    parts.push("", `${index + 1}. ${CATEGORY_NAMES[s.category]} — ${s.label}${s.confidence ? `; confidence: ${s.confidence}` : ""}; ${s.range ? `UTF-16 range [${s.range.start}, ${s.range.end})` : "position unavailable"}`, s.text);
+    parts.push("", `${index + 1}. ${s.label}${s.confidence ? ` · Confidence: ${s.confidence}` : ""}`, s.text);
   }
   if (!r.segments.length) parts.push("Segment details unavailable.");
   return Buffer.from(parts.join("\n"), "utf8");

@@ -6,6 +6,8 @@ services:
     init: true
     restart: unless-stopped
     read_only: true
+    volumes:
+      - reports:/app/data
     tmpfs:
       - /tmp:size=32m,mode=1777
     cap_drop:
@@ -20,3 +22,6 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+volumes:
+  reports:

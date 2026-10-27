@@ -19,4 +19,15 @@ const png = segmentChart({ analyzedText: text, segments: [{ text, category: 'ai'
 assert.equal(png.subarray(1, 4).toString(), 'PNG');
 assert.equal(png.readUInt32BE(16), 1000);
 writeHealth(true); assert.equal(healthy(), true); clearHealth(); assert.equal(healthy(), false);
-console.log('Non-root runtime, production dependencies, SDK command, native fonts/PNG, and health checks passed offline.');
+const { DetectionCache } = require('./dist/aiDetection/DetectionCache');
+const path = './data/smoke.sqlite';
+async function checkPersistence() {
+  const provider = { name: 'Fixture', model: 'fixture', version: 'v1', minimumWords: 1, analyze: async () => ({ provider: 'Fixture', analyzedText: text, segments: [] }) };
+  const cache = new DetectionCache(path);
+  await cache.analyze('fixture', provider, text, new AbortController().signal); cache.close();
+  const reopened = new DetectionCache(path);
+  const replay = await reopened.analyze('fixture', { ...provider, analyze: async () => assert.fail('must replay') }, text, new AbortController().signal);
+  assert.equal(replay.cached, true); reopened.close(); fs.unlinkSync(path);
+  console.log('Non-root runtime, production dependencies, SDK command, native PNG, persistent cache, and health checks passed offline.');
+}
+void checkPersistence().catch(error => { console.error(error); process.exitCode = 1; });

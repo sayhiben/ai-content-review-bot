@@ -23,7 +23,7 @@ test('real SDK thread cache cannot authorize a removed private-thread member', a
   };
   channel.members = new ThreadMemberManager(channel);
   channel.members.cache.set(member.id, { id: member.id });
-  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async () => assert.fail('must not scan') } });
+  const service = new AiCheckService({ fixture: { name: 'Fixture', model: 'fixture', version: 'v1', minimumWords: 50, analyze: async () => assert.fail('must not scan') } });
   t.after(() => service.dispose());
   const handlers = new AiCheckInteractions(service, access);
   await assert.rejects(handlers.execute({
@@ -56,24 +56,27 @@ test('SDK webhook serialization preserves report attachments through private nav
     }
     return { ...message };
   };
-  const service = new AiCheckService({ fixture: { name: 'Fixture', minimumWords: 50, analyze: async () => result() } });
+  const service = new AiCheckService({ fixture: { name: 'Fixture', model: 'fixture', version: 'v1', minimumWords: 50, analyze: async () => result() } });
   t.after(() => service.dispose());
-  const session = service.create(context, 'scan');
-  await service.analyze(session, async () => text, Date.now());
-  const handlers = new AiCheckInteractions(service, access);
-  await handlers.deliver({
+  const channel = { id: 'chat', isThread: () => false, permissionsFor: () => ({ has: () => true }) };
+  const member = { id: 'requester', roles: { cache: new Map() } };
+  const handlers = new AiCheckInteractions(service, access, async () => new Response(text));
+  await handlers.execute({
+    id: 'file', channel, member, createdTimestamp: Date.now(),
+    guild: { members: { fetch: async () => member }, channels: { fetch: async () => channel } },
+    options: { getAttachment: () => ({ name: 'post.txt', size: text.length, url: 'https://cdn.discordapp.com/attachments/fixture.txt' }) },
+    deferReply: async () => {},
     user: { id: 'requester' }, guildId: 'guild', channelId: 'chat',
     editReply: payload => webhook.editMessage('@original', payload),
     fetchReply: async () => assert.fail('first delivery must work'),
     followUp: async () => assert.fail('delivery must not fail'),
-  }, session);
-  const channel = { id: 'chat', isThread: () => false, permissionsFor: () => ({ has: () => true }) };
-  const member = { id: 'requester', roles: { cache: new Map() } };
+  });
+  const sessionId = message.components[0].components.find(c => c.label === 'View segments').custom_id.split(':')[2];
   const button = action => ({
-    customId: `ai-check:${action}:${session.id}${action === 'page' ? ':0' : ''}`,
+    customId: `ai-check:${action}:${sessionId}${action === 'page' ? ':0' : ''}`,
     user: member, member, guildId: 'guild', channelId: 'chat', channel,
     guild: { members: { fetch: async () => member }, channels: { fetch: async () => channel } },
-    isButton: () => true, isModalSubmit: () => false, message: { id: session.messageId },
+    isButton: () => true, isModalSubmit: () => false, message: { id: message.id },
     deferUpdate: async () => {}, editReply: payload => webhook.editMessage('@original', payload),
   });
   await handlers.handle(button('page'));

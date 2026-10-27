@@ -50,7 +50,7 @@ export class AiCheckInteractions {
       const modal = new ModalBuilder().setCustomId(`ai-check:input:${session.id}`).setTitle("Check text for AI");
       if (choices.length > 1) {
         modal.addLabelComponents(new LabelBuilder().setLabel("AI detection provider")
-          .setDescription("Only your chosen provider receives the text. Your report starts private.")
+          .setDescription("Receives your text for analysis.")
           .setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId("provider")
             .setPlaceholder("Choose a provider").setRequired(true).setMinValues(1).setMaxValues(1)
             .addOptions(choices.map(provider => ({ label: provider.name, value: provider.id, description: `${provider.minimumWords}+ words` })))));
@@ -152,7 +152,8 @@ export class AiCheckInteractions {
         } catch { /* Check the original message after the bounded retry. */ }
       }
       const message = await interaction.fetchReply();
-      if (message.embeds.some(embed => embed.footer?.text.includes(`Report ${session.id}`))) {
+      const expected = summaryEmbed(session);
+      if (message.embeds.some(embed => embed.title === expected.title && embed.timestamp === expected.timestamp)) {
         session.messageId = message.id;
         session.deliveryPending = false;
         return;
@@ -161,7 +162,7 @@ export class AiCheckInteractions {
     session.deliveryPending = true;
     // Never overwrite a possibly delivered report with a generic error response.
     await interaction.followUp({
-      content: "Your analysis completed, but report delivery could not be confirmed. Run /ai-check without a file in this channel before the report expires to recover it without another scan. No replacement scan was submitted.",
+      content: "Your report is saved. Run /ai-check without a file in this channel to recover it.",
       flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] },
     }).catch(() => console.warn("Completed AI report delivery could not be confirmed."));
   }
@@ -180,13 +181,13 @@ export class AiCheckInteractions {
         row.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Secondary).setCustomId(`ai-check:page:${session.id}:${index}`).setLabel(label).setDisabled(disabled));
       }
     }
-    row.addComponents(button("share", session.share === "published" ? "Posted" : session.share === "unknown" ? "Post unconfirmed" : "Post report to channel", session.share !== "available"));
+    row.addComponents(button("share", session.share === "published" ? "Posted" : session.share === "unknown" ? "Post unconfirmed" : "Post to channel", session.share !== "available"));
     const billing = session.result!.billingUrl;
-    if (billing?.startsWith("https://")) row.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("API account info").setURL(billing));
+    if (billing?.startsWith("https://")) row.addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("API account").setURL(billing));
     const summary = summaryEmbed(session);
     if (session.hasChart) Object.assign(summary, { image: { url: "attachment://ai-segments.png" } });
     return {
-      content: `Sharing posts the summary, chart, and complete text report to <#${session.channelId}>.${session.publicMessage ? ` Posted: ${session.publicMessage.url}` : ""}`,
+      content: session.publicMessage ? `Posted: ${session.publicMessage.url}` : `Post to channel shares this report and its text in <#${session.channelId}>.`,
       embeds: page < 0 ? [summary] : [{ title: `Segments · page ${page + 1}/${pages.length}`, description: pages[page] }],
       components: [row], allowedMentions: { parse: [] as never[] },
     };
@@ -202,7 +203,7 @@ export class AiCheckInteractions {
       await this.service.publish(session, async () => {
         try {
           const files = reportFiles(session, this.chart);
-          const embed = summaryEmbed({ ...session, hasChart: files.some(f => f.name === "ai-segments.png") }, true);
+          const embed = summaryEmbed({ ...session, hasChart: files.some(f => f.name === "ai-segments.png") });
           if (files.some(f => f.name === "ai-segments.png")) Object.assign(embed, { image: { url: "attachment://ai-segments.png" } });
           const message = await channel.send({ content: `AI-content report requested by <@${session.userId}>`, embeds: [embed], files,
             allowedMentions: { parse: [] }, nonce: session.id, enforceNonce: true });

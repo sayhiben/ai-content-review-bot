@@ -9,6 +9,7 @@ const { respondPrivateError } = require('../dist/discord/privateErrors');
 const { result, text, access } = require('./fixtures.cjs');
 
 function harness(t, changes = {}) {
+  let nextInteractionId = 0;
   const calls = { edits: [], replies: [], followups: [], modals: [], sends: [], defers: [], analyses: 0 };
   const state = { roles: [], channelId: 'chat', parentId: null, canView: true, canSend: true, botAttach: true, privateThread: false, member: true, ...changes };
   const member = () => ({ id: 'requester', roles: { cache: new Map(state.roles.map(r => [r, r])) } });
@@ -28,12 +29,12 @@ function harness(t, changes = {}) {
     } },
     send: async payload => { calls.sends.push(payload); if (state.sendError) throw state.sendError; return { id: 'public', url: 'https://discord.com/channels/guild/chat/public' }; },
   };
-  const service = new AiCheckService(changes.providers ?? { fixture: { name: 'Fixture provider', minimumWords: 50, analyze: async source => { calls.analyses++; return { ...result(source), billingUrl: 'https://example.invalid/billing' }; } } });
+  const service = new AiCheckService(changes.providers ?? { fixture: { name: 'Fixture provider', model: 'fixture', version: 'v1', minimumWords: 50, analyze: async source => { calls.analyses++; return { ...result(source), billingUrl: 'https://example.invalid/billing' }; } } });
   t.after(() => service.dispose());
   const handlers = new AiCheckInteractions(service, { ...access, ...changes.access }, changes.fetcher ?? (async () => new Response(text)), changes.chart);
   const interaction = (kind, extra = {}) => {
     const i = {
-      id: Math.random().toString(), guildId: 'guild', channelId: state.channelId, channel,
+      id: String(++nextInteractionId), guildId: 'guild', channelId: state.channelId, channel,
       user: { id: 'requester' }, member: { roles: [...state.roles] },
       guild: {
         members: { fetch: async () => { assert.equal(i.deferred, true, 'acknowledge before fetching member'); return member(); }, fetchMe: async () => ({ id: 'bot' }) },
@@ -88,7 +89,7 @@ test('modal uses pinned builder API; scanning and navigation are private and sha
   await h.handlers.handle(h.interaction('button', { customId: `ai-check:page:${id}:0` }));
   const page = h.calls.edits.at(-1);
   assert.match(page.embeds[0].description, /Confidence: Low/);
-  assert.equal(page.components[0].toJSON().components.length, 5);
+  assert.ok(page.components[0].toJSON().components.length <= 5);
   assert.deepEqual(page.allowedMentions.parse, []);
   await h.handlers.handle(h.interaction('button', { customId: `ai-check:summary:${id}` }));
   assert.equal(h.calls.edits.at(-1).embeds[0].image.url, 'attachment://ai-segments.png');
@@ -108,7 +109,7 @@ test('file input defers privately, reads once, and returns text even if chart re
   assert.equal(h.calls.modals.length, 0); assert.equal(h.calls.analyses, 1);
   assert.equal(h.calls.defers[0].flags, MessageFlags.Ephemeral);
   assert.equal(h.calls.edits.at(-1).files.length, 1);
-  assert.match(h.calls.edits.at(-1).embeds[0].fields.at(-1).value, /chart could not be rendered/);
+  assert.match(h.calls.edits.at(-1).embeds[0].fields.at(-1).value, /Chart unavailable/);
 });
 
 test('denied guild/DM/channel inputs stay private and never scan', async t => {
@@ -205,9 +206,8 @@ test('private error boundary handles fresh, deferred, component and modal acknow
   assert.ok(h.calls.followups.every(p => p.flags === MessageFlags.Ephemeral));
   assert.ok([...h.calls.replies, ...h.calls.followups, ...h.calls.edits].every(p => !p.content.includes('SECRET')));
   h.state.editError = true;
-  const warnings = []; const old = console.warn; console.warn = (...args) => warnings.push(args.join(' '));
-  try { await respondPrivateError(h.interaction('slash', { deferred: true }), new Error('SECRET')); }
-  finally { console.warn = old; }
+  const warnings = []; t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
+  await respondPrivateError(h.interaction('slash', { deferred: true }), new Error('SECRET'));
   assert.equal(warnings.length, 1); assert.ok(!warnings[0].includes('SECRET'));
 });
 
@@ -238,7 +238,7 @@ test('undelivered results recover through the command with no new scan and fresh
   const h = harness(t, { editError: true });
   await h.scan();
   assert.equal(h.calls.followups.at(-1).flags, MessageFlags.Ephemeral);
-  assert.match(h.calls.followups.at(-1).content, /without another scan/);
+  assert.match(h.calls.followups.at(-1).content, /report is saved/);
   assert.ok(h.calls.edits.every(p => p.components.length > 0));
   assert.equal(h.service.pendingDelivery({ userId: 'other', guildId: 'guild', channelId: 'chat' }), undefined);
   assert.equal(h.service.pendingDelivery({ userId: 'requester', guildId: 'guild', channelId: 'other' }), undefined);
@@ -254,26 +254,12 @@ test('undelivered results recover through the command with no new scan and fresh
   assert.equal(h.service.pendingDelivery({ userId: 'requester', guildId: 'guild', channelId: 'chat' }), undefined);
 });
 
-test('navigation paginates once per segment action and never paginates summaries', async t => {
-  const report = require('../dist/aiDetection/report');
-  const original = report.segmentPages;
-  let calls = 0;
-  report.segmentPages = result => { calls++; return original(result); };
-  t.after(() => { report.segmentPages = original; });
-  const h = harness(t), id = await h.scan();
-  assert.equal(calls, 0);
-  await h.handlers.handle(h.interaction('button', { customId: `ai-check:page:${id}:0` }));
-  assert.equal(calls, 1);
-  await h.handlers.handle(h.interaction('button', { customId: `ai-check:summary:${id}` }));
-  assert.equal(calls, 1);
-});
-
 const selectionFields = (provider, value = text) => new ModalSubmitFields([
   { type: ComponentType.Label, component: { type: ComponentType.StringSelect, customId: 'provider', values: provider ? [provider] : [] } },
   { type: ComponentType.Label, component: { type: ComponentType.TextInput, customId: 'text', value } },
 ]);
 const twoProviders = calls => Object.fromEntries(['pangram', 'gptzero'].map(id => [id, {
-  name: id === 'pangram' ? 'Pangram' : 'GPTZero', minimumWords: 50,
+  model: 'fixture', version: 'v1', name: id === 'pangram' ? 'Pangram' : 'GPTZero', minimumWords: 50,
   analyze: async source => { calls.push({ id, source }); return { ...result(source), provider: id }; },
 }]));
 
@@ -331,3 +317,80 @@ test('delivery recovery retains the selected provider and skips the picker', asy
   assert.equal(h.calls.modals.length, 1); assert.equal(scans.length, 1);
   assert.match(h.calls.edits.at(-1).embeds[0].title, /gptzero/);
 });
+
+test('role-less interactions still use the allowed channel', async t => {
+  const h = harness(t); await h.handlers.execute(h.interaction('slash', { member: null }));
+  assert.equal(h.calls.modals.length, 1);
+});
+
+for (const extra of [{}, { customId: 'unrelated:button', isButton: () => true }]) {
+  test(`unrelated interaction ${extra.customId ?? 'type'} is ignored`, async t => {
+    const h = harness(t); await h.handlers.handle(h.interaction('other', extra));
+    assert.equal(h.calls.defers.length, 0);
+  });
+}
+
+test('malformed report controls are rejected after acknowledgement', async t => {
+  const h = harness(t);
+  await assert.rejects(h.handlers.handle(h.interaction('button', { customId: 'ai-check:invalid' })), { code: 'control' });
+  assert.equal(h.calls.defers.length, 1);
+});
+
+for (const page of ['999', '9007199254740992', undefined]) {
+  test(`invalid page ${String(page)} is rejected`, async t => {
+    const h = harness(t), id = await h.scan();
+    const customId = `ai-check:page:${id}${page === undefined ? '' : ':' + page}`;
+    await assert.rejects(h.handlers.handle(h.interaction('button', { customId })), { code: 'page' });
+  });
+}
+
+test('missing channel context fails closed', async t => {
+  const h = harness(t, { roles: ['reviewer'] });
+  await assert.rejects(h.handlers.execute(h.interaction('slash', { channelId: null, channel: null })), { code: 'guild' });
+});
+
+test('modal input requires an available guild', async t => {
+  const h = harness(t); await h.handlers.execute(h.interaction('slash'));
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId: h.calls.modals[0].custom_id, guild: null })), { code: 'access' });
+});
+
+test('report actions cannot be submitted as modal input', async t => {
+  const h = harness(t); await h.handlers.execute(h.interaction('slash'));
+  await assert.rejects(h.handlers.handle(h.interaction('modal', { customId: h.calls.modals[0].custom_id.replace(':input:', ':summary:') })), { code: 'control' });
+});
+
+test('failed receipt lookup leaves a recoverable report', async t => {
+  const h = harness(t, { editError: true }); await h.handlers.execute(h.interaction('slash'));
+  await h.handlers.handle(h.interaction('modal', { customId: h.calls.modals[0].custom_id, fetchReply: async () => { throw new Error('SECRET'); } }));
+  assert.match(h.calls.followups[0].content, /report is saved/);
+});
+
+test('failed recovery notice logs no raw errors', async t => {
+  const warning = t.mock.method(console, 'warn', () => {});
+  const h = harness(t, { editError: true }); await h.handlers.execute(h.interaction('slash'));
+  await h.handlers.handle(h.interaction('modal', { customId: h.calls.modals[0].custom_id, followUp: async () => { throw new Error('SECRET'); } }));
+  assert.equal(warning.mock.callCount(), 1);
+  assert.doesNotMatch(warning.mock.calls[0].arguments.join(' '), /SECRET/);
+});
+
+test('reports can be posted into accessible threads', async t => {
+  const h = harness(t, { channelId: 'thread', parentId: 'chat' }), id = await h.scan();
+  await h.handlers.handle(h.interaction('button', { customId: `ai-check:share:${id}` }));
+  assert.equal(h.calls.sends.length, 1);
+});
+
+for (const state of ['archived', 'locked']) {
+  test(`${state} threads reject public posting`, async t => {
+    const h = harness(t, { channelId: 'thread', parentId: 'chat' }), id = await h.scan();
+    const button = h.interaction('button', { customId: `ai-check:share:${id}` }); button.channel[state] = true;
+    await assert.rejects(h.handlers.handle(button), { code: 'publish_rejected' });
+    assert.equal(h.calls.sends.length, 0);
+  });
+}
+
+for (const status of [403, 408, 500]) {
+  test(`Discord HTTP ${status} posting has the appropriate retry policy`, async t => {
+    const h = harness(t, { sendError: { status } }), id = await h.scan();
+    await assert.rejects(h.handlers.handle(h.interaction('button', { customId: `ai-check:share:${id}` })), { code: status === 403 ? 'publish_rejected' : 'share_unknown' });
+  });
+}

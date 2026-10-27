@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { TextAttachment, validateText } from "./input";
 import { AiCheckError, AiDetectionProvider, DetectionResult, LIMITS } from "./types";
+import { DetectionCache, normalizeText } from "./DetectionCache";
 
 export interface RequestContext { userId: string; guildId: string; channelId: string }
 export interface ReportSession extends RequestContext {
@@ -12,6 +13,8 @@ export interface ReportSession extends RequestContext {
   submittedText?: string;
   result?: DetectionResult;
   completedAt?: number;
+  scannedAt?: number;
+  cached?: boolean;
   messageId?: string;
   deliveryPending?: boolean;
   hasChart?: boolean;
@@ -37,9 +40,13 @@ export class AiCheckService {
     providers: Record<string, AiDetectionProvider>,
     private readonly now: () => number = Date.now,
     private readonly log: (outcome: string) => void = () => undefined,
+    private readonly cache: DetectionCache = new DetectionCache(":memory:"),
   ) {
     this.providers = new Map(Object.entries(providers));
-    if (!this.providers.size) throw new AiCheckError("unavailable", "No AI detection provider is configured and available. Contact a bot administrator.");
+    if (!this.providers.size) {
+      this.cache.close();
+      throw new AiCheckError("unavailable", "No AI detection provider is configured. Contact an administrator.");
+    }
     this.cleanupTimer = setInterval(() => this.cleanup(), 30_000);
     this.cleanupTimer.unref();
   }
@@ -50,6 +57,7 @@ export class AiCheckService {
     this.sessions.clear();
     this.interactions.clear();
     this.submissions.clear();
+    this.cache.close();
   }
 
   get providerChoices() {
@@ -87,7 +95,7 @@ export class AiCheckService {
   get(id: string, context: RequestContext): ReportSession {
     this.cleanup();
     const session = this.sessions.get(id);
-    if (!session) throw new AiCheckError("expired", "These report controls have expired or the bot restarted. Expiry does not delete messages or attachments already delivered to Discord.");
+    if (!session) throw new AiCheckError("expired", "Controls expired. Use /ai-check with the same text to retrieve the saved result.");
     if (session.userId !== context.userId || session.guildId !== context.guildId || session.channelId !== context.channelId) {
       throw new AiCheckError("owner", "Only the requester can use these report controls, in the original channel.");
     }
@@ -114,21 +122,23 @@ export class AiCheckService {
     session.phase = "running";
     try {
       const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(LIMITS.analysisMs)]);
-      const text = await loadText(signal);
+      const text = normalizeText(await loadText(signal));
       signal.throwIfAborted();
       validateText(text, provider.minimumWords);
       if (provider.maximumCharacters && text.length > provider.maximumCharacters) {
         throw new AiCheckError("long", `This provider accepts at most ${provider.maximumCharacters.toLocaleString("en-US")} characters. No scan was submitted.`);
       }
       this.submissions.set(user, this.now());
-      const result = await provider.analyze(text, { signal });
+      const analysis = await this.cache.analyze(providerId!, provider, text, signal);
       session.attachment = undefined;
       session.submittedText = text;
-      session.result = result;
+      session.result = analysis.result;
+      session.scannedAt = analysis.scannedAt;
+      session.cached = analysis.cached;
       session.completedAt = this.now();
       session.expiresAt = Math.min(this.now() + LIMITS.reportMs, responseCreatedAt + LIMITS.tokenMarginMs);
       session.phase = "ready";
-      this.log("success");
+      this.log(analysis.cached ? "cache_hit" : "success");
     } catch (error) {
       this.sessions.delete(session.id);
       const safe = error instanceof AiCheckError ? error : new AiCheckError("analysis", "The analysis could not be completed. No replacement scan was submitted.");

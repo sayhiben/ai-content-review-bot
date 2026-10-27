@@ -46,23 +46,31 @@ export function registrationConfig(env: NodeJS.ProcessEnv = process.env) {
 
 export function botConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const enabled = boolean(env, "AI_DETECTION_ENABLED", false);
-  if (env.AI_DETECTION_PROVIDER !== undefined) throw new ConfigurationError("Replace AI_DETECTION_PROVIDER with PANGRAM_ENABLED and GPTZERO_ENABLED.");
   const model = env.PANGRAM_MODEL?.trim() ?? "pangram-4";
   if (!model) throw new ConfigurationError("PANGRAM_MODEL must not be empty.");
   const detection: AiDetectionConfig = {
     enabled,
+    cachePath: env.CACHE_PATH?.trim() || "data/reports.sqlite",
     pangram: {
       enabled: boolean(env, "PANGRAM_ENABLED", true), apiKey: env.PANGRAM_API_KEY?.trim() || undefined,
-      model, usdPer100Words: positiveNumber(env, "PANGRAM_USD_PER_100_WORDS", 0.05)!,
+      model, version: env.PANGRAM_MODEL_VERSION?.trim() || "", usdPer100Words: positiveNumber(env, "PANGRAM_USD_PER_100_WORDS", 0.05)!,
     },
     gptzero: {
       enabled: boolean(env, "GPTZERO_ENABLED", false), apiKey: env.GPTZERO_API_KEY?.trim() || undefined,
-      modelVersion: env.GPTZERO_MODEL_VERSION?.trim() || undefined,
+      modelVersion: env.GPTZERO_MODEL_VERSION?.trim() || "",
       usdPer1000Words: positiveNumber(env, "GPTZERO_USD_PER_1000_WORDS"),
     },
   };
   if (enabled && ![detection.pangram, detection.gptzero].some(provider => provider.enabled && provider.apiKey)) {
     throw new ConfigurationError("AI_DETECTION_ENABLED requires an enabled provider with PANGRAM_API_KEY or GPTZERO_API_KEY.");
+  }
+  for (const [provider, version, variable] of [
+    [detection.pangram, detection.pangram.version, "PANGRAM_MODEL_VERSION"],
+    [detection.gptzero, detection.gptzero.modelVersion, "GPTZERO_MODEL_VERSION"],
+  ] as const) {
+    if (enabled && provider.enabled && provider.apiKey && (!version || /^(latest|default)$/i.test(version))) {
+      throw new ConfigurationError(`${variable} must identify an explicit model version.`);
+    }
   }
   return {
     token: required(env, "DISCORD_TOKEN"),

@@ -15,6 +15,13 @@ runs:
       shell: bash
     - run: npm run check
       shell: bash
+    - name: Save coverage report
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: coverage
+        path: coverage/lcov.info
+        if-no-files-found: error
     - run: npm run audit:production
       shell: bash
     - name: Preview commands without credentials or network access
@@ -26,6 +33,7 @@ runs:
     - name: Verify final image without network access or credentials
       run: >-
         docker run --rm --network none --read-only --tmpfs /tmp:rw,size=32m,mode=1777
+        --tmpfs /app/data:rw,size=16m,uid=1000,gid=1000,mode=700
         --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node
         -v "$GITHUB_WORKSPACE/tests/container-smoke.cjs:/app/container-smoke.cjs:ro"
         ai-review-verified /app/container-smoke.cjs

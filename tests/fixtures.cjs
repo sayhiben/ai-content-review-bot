@@ -17,7 +17,10 @@ const context = { userId: 'requester', guildId: 'guild', channelId: 'chat' };
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
 const access = { guildId: 'guild', channelId: 'chat', roleId: 'reviewer', allowThreads: true };
 const config = () => ({ token: 'TEST_ONLY', access: { ...access }, detection: { enabled: true,
-  pangram: { enabled: true, apiKey: 'TEST_ONLY', model: 'pangram-4', usdPer100Words: .05 },
-  gptzero: { enabled: false },
+  cachePath: ':memory:',
+  pangram: { enabled: true, apiKey: 'TEST_ONLY', model: 'pangram-4', version: 'fixture-4.1', usdPer100Words: .05 },
+  gptzero: { enabled: false, modelVersion: 'fixture-version' },
 } });
-module.exports = { text, pangram, result, context, json, access, config };
+const provider = (overrides = {}) => ({ name: 'Fixture', model: 'fixture', version: 'fixture-v1', minimumWords: 50, analyze: async source => result(source), ...overrides });
+const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+module.exports = { text, pangram, result, context, json, access, config, provider, deferred };
